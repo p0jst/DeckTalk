@@ -1,4 +1,5 @@
 -- DeckTalk: one-tap chat for Steam Deck / controller players
+-- Works on WoW: Forever and retail (both run the modern client).
 local ADDON = ...
 
 ---------------------------------------------------------------------------
@@ -7,28 +8,43 @@ local ADDON = ...
 local NUM_PHRASES = 8
 local DEFAULTS = {
 	phrases = {
-		{ label = "Hi!",        text = "Hi!" },
-		{ label = "Thanks!",    text = "Thanks for the help!" },
-		{ label = "Sorry",      text = "Sorry!" },
-		{ label = "Ready",      text = "Ready." },
-		{ label = "One sec",    text = "One moment please." },
-		{ label = "BRB",        text = "BRB, back in a few minutes." },
-		{ label = "Group up?",  text = "Want to group up for %q?" },
-		{ label = "GG / Bye",   text = "Thanks for the group, have a good one!" },
+		{ label = "Hi!",         text = "Hi!" },
+		{ label = "Thanks!",     text = "Thanks!" },
+		{ label = "Yes",         text = "Yes" },
+		{ label = "No",          text = "No" },
+		{ label = "One sec",     text = "One sec please." },
+		{ label = "Sorry!",      text = "Sorry!" },
+		{ label = "Inv please?", text = "Could you invite me, please?" },
+		{ label = "Group up?",   text = "Want to group up for %q?" },
 	},
-	note       = "I'm playing on a Steam Deck and typing is slow - sorry if I don't reply much!",
-	lfgFormat  = "LFG %q - anyone want to group up?",
-	lfgChannel = "LookingForGroup",
-	autoIntro  = true,   -- post note to group chat when joining a group
-	autoReply  = true,   -- whisper note back to people who whisper you
-	shown      = true,
-	scale      = 1,
+	note           = "I'm playing on a Steam Deck and typing is slow - sorry if I don't reply much!",
+	lfgFormat      = "LFG %q - %w",
+	lfgChannel     = "LookingForGroup",
+	dest           = "AUTO",  -- AUTO | SAY | GROUP | WHISPER
+	role           = "AUTO",  -- AUTO | TANK | HEALER | DAMAGER
+	autoIntro      = true,    -- post note in group chat when joining a group
+	autoReply      = true,    -- whisper note back to people who whisper you
+	replySkipKnown = true,    -- ...but not to friends / guild
+	shown          = true,
+	collapsed      = false,
+	scale          = 1,
 }
+
+local ROLE_TEXT  = { TANK = "Tank", HEALER = "Healer", DAMAGER = "DPS" }
+local ROLE_CYCLE = { "AUTO", "TANK", "HEALER", "DAMAGER" }
+local DESTS      = { "AUTO", "SAY", "GROUP", "WHISPER" }
+local DEST_TEXT  = { AUTO = "Auto", SAY = "Say", GROUP = "Group", WHISPER = "Whisper" }
+local CHAT_TEXT  = { SAY = "Say", PARTY = "Party", RAID = "Raid", INSTANCE_CHAT = "Instance" }
+
+local REPLY_COOLDOWN   = 600 -- auto-reply once per player per 10 min
+local CHAT_COOLDOWN    = 1   -- debounce for say/party/whisper
+local CHANNEL_COOLDOWN = 3   -- debounce for LFG/General (spam protection)
 
 local DB
 local lastWhisperer
-local replied = {}            -- [sender] = GetTime()
-local REPLY_COOLDOWN = 600    -- seconds per sender
+local replied = {}
+local lastSendAt = { CHAT = 0, CHANNEL = 0 }
+local pendingIntro = false
 
 ---------------------------------------------------------------------------
 -- Helpers
@@ -51,9 +67,42 @@ end
 
 local SendChat = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
 
+local function DetectRole()
+	local ok, role = pcall(function()
+		local getSpec = (C_SpecializationInfo and C_SpecializationInfo.GetSpecialization) or GetSpecialization
+		local spec = getSpec and getSpec()
+		if spec and spec > 0 then
+			if GetSpecializationRole then
+				local r = GetSpecializationRole(spec)
+				if r then return r end
+			end
+			local getInfo = (C_SpecializationInfo and C_SpecializationInfo.GetSpecializationInfo) or GetSpecializationInfo
+			if getInfo then
+				local _, _, _, _, r = getInfo(spec)
+				if r then return r end
+			end
+		end
+		return UnitGroupRolesAssigned and UnitGroupRolesAssigned("player")
+	end)
+	if ok and ROLE_TEXT[role] then return role end
+end
+
+local function GetRole()
+	if DB.role ~= "AUTO" then return DB.role end
+	return DetectRole()
+end
+
+-- "Healer, lvl 18 Druid" (role omitted when unknown)
+local function WhoText()
+	local who = ("lvl %d %s"):format(UnitLevel("player") or 0, (UnitClass("player")) or "")
+	local role = GetRole()
+	if role then who = ROLE_TEXT[role] .. ", " .. who end
+	return who
+end
+
 local function GetTrackedQuestID()
 	local id = C_SuperTrack and C_SuperTrack.GetSuperTrackedQuestID and C_SuperTrack.GetSuperTrackedQuestID()
-	if (not id or id == 0) and C_QuestLog.GetQuestIDForQuestWatchIndex then
+	if (not id or id == 0) and C_QuestLog and C_QuestLog.GetQuestIDForQuestWatchIndex then
 		id = C_QuestLog.GetQuestIDForQuestWatchIndex(1)
 	end
 	if id and id > 0 then return id end
@@ -67,28 +116,53 @@ local function GetQuestText()
 		or ("quest " .. id)
 end
 
--- %q = tracked quest link, %t = target name, %z = zone
-local function Expand(msg)
-	msg = msg:gsub("%%q", function() return GetQuestText() or "this quest" end)
-	msg = msg:gsub("%%t", function() return UnitName("target") or "" end)
+local function Tidy(s)
+	s = s:gsub("%s+([!?.,])", "%1"):gsub("%s%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+	return s
+end
+
+-- %q quest  %t target  %z zone  %w role+level+class  %r role  %l level  %c class
+local function Expand(msg, questFallback)
+	msg = msg:gsub("%%q", function() return GetQuestText() or questFallback or "this quest" end)
+	msg = msg:gsub("%%t", function() return (UnitName("target")) or "" end)
 	msg = msg:gsub("%%z", function() return GetZoneText() or "" end)
-	return msg
+	msg = msg:gsub("%%w", function() return WhoText() end)
+	msg = msg:gsub("%%r", function() local r = GetRole() return r and ROLE_TEXT[r] or "" end)
+	msg = msg:gsub("%%l", function() return tostring(UnitLevel("player") or "") end)
+	msg = msg:gsub("%%c", function() return (UnitClass("player")) or "" end)
+	return Tidy(msg)
 end
 
-local function Send(msg, chatType, target)
-	if not msg or msg == "" then return end
-	msg = Expand(msg)
-	if #msg > 255 then msg = msg:sub(1, 255) end
-	local ok, err = pcall(SendChat, msg, chatType, nil, target)
-	if not ok then Print("Could not send (" .. chatType .. "): " .. tostring(err)) end
-end
-
--- Best chat for "talk to the people around me"
-local function GroupChat()
+local function GroupChatType()
 	if IsInGroup(LE_PARTY_CATEGORY_INSTANCE) then return "INSTANCE_CHAT" end
 	if IsInRaid() then return "RAID" end
 	if IsInGroup() then return "PARTY" end
-	return "SAY"
+end
+
+-- Where do phrase/note buttons send? Returns chatType, target  or  nil, nil, reason
+local function ResolveDest()
+	local d = DB.dest
+	if d == "SAY" then return "SAY" end
+	if d == "GROUP" then
+		local g = GroupChatType()
+		if g then return g end
+		return nil, nil, "You're not in a group."
+	end
+	if d == "WHISPER" then
+		if lastWhisperer then return "WHISPER", lastWhisperer end
+		return nil, nil, "Nobody has whispered you yet."
+	end
+	return GroupChatType() or "SAY"
+end
+
+local function GroupHasOtherPlayers()
+	local raid = IsInRaid()
+	local n = GetNumGroupMembers()
+	for i = 1, raid and n or (n - 1) do
+		local u = (raid and "raid" or "party") .. i
+		if UnitExists(u) and UnitIsPlayer(u) and not UnitIsUnit(u, "player") then return true end
+	end
+	return false
 end
 
 local function FindLFGChannel()
@@ -98,77 +172,187 @@ local function FindLFGChannel()
 	if id and id > 0 then return id end
 end
 
+-- auto = automatic message: skips the debounce and stays quiet on failure
+local function Send(msg, chatType, target, auto)
+	if not msg or msg == "" or not chatType then return false end
+	if not auto then
+		local kind = chatType == "CHANNEL" and "CHANNEL" or "CHAT"
+		local cd = kind == "CHANNEL" and CHANNEL_COOLDOWN or CHAT_COOLDOWN
+		local now = GetTime()
+		if now - lastSendAt[kind] < cd then return false end
+		lastSendAt[kind] = now
+	end
+	msg = Expand(msg)
+	if #msg > 255 and not msg:find("|H", 1, true) then msg = msg:sub(1, 255) end
+	local ok, err = pcall(SendChat, msg, chatType, nil, target)
+	if not ok then
+		if not auto then Print("Couldn't send: " .. tostring(err)) end
+		return false
+	end
+	return true
+end
+
+---------------------------------------------------------------------------
+-- Panel (forward declarations used by actions)
+---------------------------------------------------------------------------
+local panel, titleText
+local phraseButtons, destButtons = {}, {}
+local lfgButton, noteButton
+local OpenEditor, UpdateTitle
+
+local function Flash(btn)
+	if not btn or not btn.baseText then return end
+	btn:SetText("|cff33ff33Sent!|r")
+	if btn.flashTimer then btn.flashTimer:Cancel() end
+	btn.flashTimer = C_Timer.NewTimer(1, function()
+		btn.flashTimer = nil
+		btn:SetText(btn.baseText)
+	end)
+end
+
 ---------------------------------------------------------------------------
 -- Actions (also used by keybindings)
 ---------------------------------------------------------------------------
+local function SendToDest(text, btn)
+	local chatType, target, reason = ResolveDest()
+	if not chatType then Print(reason) return end
+	if Send(text, chatType, target) then Flash(btn) end
+end
+
 function DeckTalk_Phrase(i)
-	local p = DB and DB.phrases[i]
-	if p and p.text ~= "" then Send(p.text, GroupChat()) end
+	if not DB then return end
+	local p = DB.phrases[i]
+	if p and p.text ~= "" then SendToDest(p.text, phraseButtons[i]) end
 end
 
 function DeckTalk_Note()
-	Send(DB.note, GroupChat())
+	if DB then SendToDest(DB.note, noteButton) end
 end
 
 function DeckTalk_LFG()
-	if not GetTrackedQuestID() then
-		Print("No tracked quest. Track or super-track a quest first.")
-		return
-	end
+	if not DB then return end
+	-- no tracked quest -> "LFG <zone> - Healer, lvl 18 Druid"
+	local msg = Expand(DB.lfgFormat, GetZoneText())
 	local chan = FindLFGChannel()
-	if chan then
-		Send(DB.lfgFormat, "CHANNEL", chan)
-	else
-		Send(DB.lfgFormat, "SAY")
-	end
+	local ok
+	if chan then ok = Send(msg, "CHANNEL", chan) else ok = Send(msg, "SAY") end
+	if ok then Flash(lfgButton) end
 end
 
 function DeckTalk_ReplyNote()
+	if not DB then return end
 	if not lastWhisperer then Print("Nobody has whispered you yet.") return end
 	Send(DB.note, "WHISPER", lastWhisperer)
+end
+
+local function SetDest(d)
+	DB.dest = d
+	for _, b in ipairs(destButtons) do
+		if b.dest == d then
+			b:LockHighlight()
+			b:SetText("|cffffffff" .. DEST_TEXT[b.dest] .. "|r")
+		else
+			b:UnlockHighlight()
+			b:SetText("|cff999999" .. DEST_TEXT[b.dest] .. "|r")
+		end
+	end
+	UpdateTitle()
+end
+
+function DeckTalk_CycleDest()
+	if not DB then return end
+	local idx = 1
+	for i, d in ipairs(DESTS) do if d == DB.dest then idx = i end end
+	SetDest(DESTS[idx % #DESTS + 1])
 end
 
 ---------------------------------------------------------------------------
 -- Main panel
 ---------------------------------------------------------------------------
-local BTN_W, BTN_H, PAD = 150, 34, 6
-local panel, buttons = nil, {}
+local PAD, BTN_W, BTN_H, DEST_H, TITLE_H = 6, 150, 32, 22, 26
+local CONTENT_W = BTN_W * 2 + PAD
+local FRAME_W = CONTENT_W + PAD * 2
+local PHRASE_TOP = TITLE_H + DEST_H + PAD * 2
+local FRAME_H = PHRASE_TOP + (NUM_PHRASES / 2 + 1) * (BTN_H + PAD) + PAD
+
+local function KeyText(action)
+	local key = GetBindingKey(action)
+	if not key then return "" end
+	return GetBindingText(key, true) or key
+end
+
+function UpdateTitle()
+	if not titleText then return end
+	local chatType, target = ResolveDest()
+	local where
+	if not chatType then
+		where = "|cffff5555" .. (DB.dest == "WHISPER" and "no whisper yet" or "not in a group") .. "|r"
+	elseif chatType == "WHISPER" then
+		local ok, short = pcall(Ambiguate, target, "short")
+		where = "|cffff80ffWhisper " .. tostring(ok and short or target) .. "|r"
+	else
+		where = CHAT_TEXT[chatType] or chatType
+	end
+	titleText:SetText("DeckTalk  |cff999999to|r " .. where)
+end
 
 local function UpdateButtons()
+	if not panel then return end
 	for i = 1, NUM_PHRASES do
-		local p = DB.phrases[i]
-		buttons[i]:SetText(p and p.label ~= "" and p.label or ("Phrase " .. i))
+		local b, p = phraseButtons[i], DB.phrases[i]
+		b.baseText = (p and p.label ~= "") and p.label or ("Phrase " .. i)
+		if not b.flashTimer then b:SetText(b.baseText) end
+		b.key:SetText(KeyText("DECKTALK_PHRASE" .. i))
 	end
+	lfgButton.key:SetText(KeyText("DECKTALK_LFG"))
+	noteButton.key:SetText(KeyText("DECKTALK_NOTE"))
 end
 
 local function SavePosition()
-	local point, _, relPoint, x, y = panel:GetPoint()
-	DB.pos = { point, relPoint, x, y }
+	DB.pos = { panel:GetLeft(), panel:GetTop() }
 end
 
-local function MakeButton(parent, text, col, row, onClick, tip)
+local function ApplyCollapsed()
+	local c = DB.collapsed
+	for _, child in ipairs(panel.content) do child:SetShown(not c) end
+	if panel.Inset then panel.Inset:SetShown(not c) end
+	panel:SetHeight(c and TITLE_H + 2 or FRAME_H)
+	panel.minBtn:SetText(c and "+" or "-")
+end
+
+local function AddTooltip(b, fn)
+	b:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+		GameTooltip:SetText(fn(), 1, 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	b:SetScript("OnLeave", GameTooltip_Hide)
+end
+
+local function MakeButton(parent, w, h, x, y, text, onClick)
 	local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
-	b:SetSize(BTN_W, BTN_H)
-	b:SetPoint("TOPLEFT", PAD + col * (BTN_W + PAD), -28 - row * (BTN_H + PAD))
-	b:SetText(text)
+	b:SetSize(w, h)
+	b:SetPoint("TOPLEFT", x, y)
+	b:SetText(text or "")
 	b:SetScript("OnClick", onClick)
-	if tip then
-		b:SetScript("OnEnter", function(self)
-			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-			GameTooltip:SetText(tip(), 1, 1, 1, 1, true)
-			GameTooltip:Show()
-		end)
-		b:SetScript("OnLeave", GameTooltip_Hide)
-	end
 	return b
 end
 
-local OpenEditor -- forward
+local function MakeActionButton(col, row, onClick)
+	local b = MakeButton(panel, BTN_W, BTN_H,
+		PAD + col * (BTN_W + PAD), -PHRASE_TOP - row * (BTN_H + PAD), "", onClick)
+	local fs = b:GetFontString()
+	if fs then fs:SetWidth(BTN_W - 30) fs:SetWordWrap(false) end -- long labels get "..."
+	b.key = b:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	b.key:SetPoint("TOPRIGHT", -5, -4)
+	tinsert(panel.content, b)
+	return b
+end
 
 local function CreatePanel()
 	panel = CreateFrame("Frame", "DeckTalkPanel", UIParent, "BasicFrameTemplateWithInset")
-	local rows = NUM_PHRASES / 2 + 2
-	panel:SetSize(PAD * 3 + BTN_W * 2, 34 + rows * (BTN_H + PAD))
+	panel.content = {}
+	panel:SetSize(FRAME_W, FRAME_H)
 	panel:SetMovable(true)
 	panel:EnableMouse(true)
 	panel:RegisterForDrag("LeftButton")
@@ -176,53 +360,114 @@ local function CreatePanel()
 	panel:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() SavePosition() end)
 	panel:SetClampedToScreen(true)
 	panel:SetScale(DB.scale or 1)
+	if panel.CloseButton then panel.CloseButton:Hide() end -- minimize instead of close
 
-	if DB.pos then
-		panel:SetPoint(DB.pos[1], UIParent, DB.pos[2], DB.pos[3], DB.pos[4])
+	if DB.pos and type(DB.pos[1]) == "number" then
+		panel:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", DB.pos[1], DB.pos[2])
 	else
-		panel:SetPoint("RIGHT", UIParent, "RIGHT", -40, 0)
+		panel:SetPoint("LEFT", UIParent, "LEFT", 16, 80)
 	end
 
-	local title = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	title:SetPoint("TOP", 0, -5)
-	title:SetText("DeckTalk")
+	titleText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	titleText:SetPoint("TOPLEFT", 10, -6)
+	titleText:SetWidth(FRAME_W - 86) -- leave room for Edit / minimize buttons
+	titleText:SetJustifyH("LEFT")
+	titleText:SetWordWrap(false)
 
-	panel.CloseButton:HookScript("OnClick", function() DB.shown = false end)
+	panel.minBtn = MakeButton(panel, 22, 18, 0, 0, "-", function()
+		DB.collapsed = not DB.collapsed
+		ApplyCollapsed()
+	end)
+	panel.minBtn:ClearAllPoints()
+	panel.minBtn:SetPoint("TOPRIGHT", -4, -3)
+	AddTooltip(panel.minBtn, function() return DB.collapsed and "Expand" or "Minimize" end)
+
+	local edit = MakeButton(panel, 40, 18, 0, 0, "Edit", function() OpenEditor() end)
+	edit:ClearAllPoints()
+	edit:SetPoint("RIGHT", panel.minBtn, "LEFT", -2, 0)
+	AddTooltip(edit, function() return "Edit phrases and options" end)
+
+	-- destination selector
+	local dw = math.floor((CONTENT_W - 3 * 4) / 4)
+	for i, d in ipairs(DESTS) do
+		local b = MakeButton(panel, dw, DEST_H, PAD + (i - 1) * (dw + 4), -TITLE_H - PAD, DEST_TEXT[d],
+			function() SetDest(d) end)
+		b.dest = d
+		AddTooltip(b, function()
+			if d == "AUTO" then return "Group chat when in a group, otherwise /say" end
+			if d == "WHISPER" then return "Reply to the last person who whispered you" end
+			if d == "GROUP" then return "Party / raid / instance chat" end
+			return "/say to players nearby"
+		end)
+		destButtons[i] = b
+		tinsert(panel.content, b)
+	end
 
 	for i = 1, NUM_PHRASES do
-		local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
-		buttons[i] = MakeButton(panel, "", col, row, function() DeckTalk_Phrase(i) end,
-			function() return Expand(DB.phrases[i].text) .. "\n|cff888888-> " .. GroupChat() .. "|r" end)
+		local b = MakeActionButton((i - 1) % 2, math.floor((i - 1) / 2), function() DeckTalk_Phrase(i) end)
+		AddTooltip(b, function() return Expand(DB.phrases[i].text) end)
+		phraseButtons[i] = b
 	end
-	local r = NUM_PHRASES / 2
-	MakeButton(panel, "|cff00ff00LFG: quest|r", 0, r, DeckTalk_LFG,
-		function() return GetTrackedQuestID() and Expand(DB.lfgFormat) or "No tracked quest" end)
-	MakeButton(panel, "|cffffcc00Deck note|r", 1, r, DeckTalk_Note,
-		function() return DB.note end)
-	MakeButton(panel, "Reply note", 0, r + 1, DeckTalk_ReplyNote,
-		function() return lastWhisperer and ("Whisper note to " .. lastWhisperer) or "Nobody has whispered you yet" end)
-	MakeButton(panel, "Settings", 1, r + 1, function() OpenEditor() end)
 
+	local row = NUM_PHRASES / 2
+	lfgButton = MakeActionButton(0, row, DeckTalk_LFG)
+	lfgButton.baseText = "|cff00ff00LFG: quest|r"
+	lfgButton:SetText(lfgButton.baseText)
+	AddTooltip(lfgButton, function()
+		return Expand(DB.lfgFormat, GetZoneText()) .. "\n|cff999999Posted in LookingForGroup (or General)|r"
+	end)
+
+	noteButton = MakeActionButton(1, row, DeckTalk_Note)
+	noteButton.baseText = "|cffffcc00Deck note|r"
+	noteButton:SetText(noteButton.baseText)
+	AddTooltip(noteButton, function() return DB.note end)
+
+	SetDest(DB.dest)
 	UpdateButtons()
+	ApplyCollapsed()
 	panel:SetShown(DB.shown)
 end
 
 function DeckTalk_Toggle()
-	DB.shown = not panel:IsShown()
-	panel:SetShown(DB.shown)
+	if not panel then return end
+	if not panel:IsShown() then
+		DB.shown, DB.collapsed = true, false
+		panel:Show()
+	else
+		DB.collapsed = not DB.collapsed
+	end
+	ApplyCollapsed()
+end
+
+-- Addon compartment (retail minimap dropdown): left = toggle, right = settings
+function DeckTalk_OnCompartmentClick(_, button)
+	if button == "RightButton" then OpenEditor() else DeckTalk_Toggle() end
+end
+
+function DeckTalk_OnCompartmentEnter(_, frame)
+	GameTooltip:SetOwner(frame, "ANCHOR_LEFT")
+	GameTooltip:SetText("DeckTalk")
+	GameTooltip:AddLine("Left-click: show / minimize", 1, 1, 1)
+	GameTooltip:AddLine("Right-click: edit phrases", 1, 1, 1)
+	GameTooltip:Show()
+end
+
+function DeckTalk_OnCompartmentLeave()
+	GameTooltip:Hide()
 end
 
 ---------------------------------------------------------------------------
 -- Settings editor
 ---------------------------------------------------------------------------
 local editor
+local EDITOR_W, EDITOR_H = 520, 572
 
-local function MakeEdit(parent, w, x, y)
+local function MakeEdit(parent, w, x, y, maxLetters)
 	local e = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
 	e:SetSize(w, 22)
 	e:SetPoint("TOPLEFT", x, y)
 	e:SetAutoFocus(false)
-	e:SetMaxLetters(255)
+	e:SetMaxLetters(maxLetters or 255)
 	e:SetScript("OnEscapePressed", e.ClearFocus)
 	e:SetScript("OnEnterPressed", e.ClearFocus)
 	return e
@@ -230,23 +475,58 @@ end
 
 local function MakeCheck(parent, label, x, y)
 	local c = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+	c:SetSize(26, 26)
 	c:SetPoint("TOPLEFT", x, y)
-	local fs = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	fs:SetPoint("LEFT", c, "RIGHT", 2, 0)
+	local fs = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	fs:SetPoint("LEFT", c, "RIGHT", 4, 0)
 	fs:SetText(label)
 	return c
 end
 
-local function Label(parent, text, x, y)
-	local fs = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+local function Label(parent, text, x, y, font)
+	local fs = parent:CreateFontString(nil, "OVERLAY", font or "GameFontNormalSmall")
 	fs:SetPoint("TOPLEFT", x, y)
+	fs:SetJustifyH("LEFT")
 	fs:SetText(text)
 	return fs
 end
 
+local function RoleButtonText(role)
+	if role == "AUTO" then
+		local d = DetectRole()
+		return "Role: Auto (" .. (d and ROLE_TEXT[d] or "not detected") .. ")"
+	end
+	return "Role: " .. ROLE_TEXT[role]
+end
+
+local function UpdatePreview()
+	-- preview with the role chosen in the editor, not the saved one
+	local saved = DB.role
+	DB.role = editor.role
+	editor.preview:SetText("Preview: " .. Expand(editor.lfg:GetText(), GetZoneText()))
+	DB.role = saved
+end
+
+local function FillEditor(src)
+	for i = 1, NUM_PHRASES do
+		editor.labels[i]:SetText(src.phrases[i].label or "")
+		editor.texts[i]:SetText(src.phrases[i].text or "")
+		editor.labels[i]:SetCursorPosition(0)
+		editor.texts[i]:SetCursorPosition(0)
+	end
+	editor.note:SetText(src.note); editor.note:SetCursorPosition(0)
+	editor.lfg:SetText(src.lfgFormat); editor.lfg:SetCursorPosition(0)
+	editor.role = src.role
+	editor.roleBtn:SetText(RoleButtonText(editor.role))
+	editor.autoIntro:SetChecked(src.autoIntro)
+	editor.autoReply:SetChecked(src.autoReply)
+	editor.skipKnown:SetChecked(src.replySkipKnown)
+	UpdatePreview()
+end
+
 local function CreateEditor()
 	editor = CreateFrame("Frame", "DeckTalkEditor", UIParent, "BasicFrameTemplateWithInset")
-	editor:SetSize(520, 470)
+	editor:SetSize(EDITOR_W, EDITOR_H)
 	editor:SetPoint("CENTER")
 	editor:SetFrameStrata("DIALOG")
 	editor:SetMovable(true)
@@ -254,76 +534,140 @@ local function CreateEditor()
 	editor:RegisterForDrag("LeftButton")
 	editor:SetScript("OnDragStart", editor.StartMoving)
 	editor:SetScript("OnDragStop", editor.StopMovingOrSizing)
+	editor:SetClampedToScreen(true)
 	tinsert(UISpecialFrames, "DeckTalkEditor") -- Esc closes
 
-	local t = editor:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	t:SetPoint("TOP", 0, -5)
+	local t = editor:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	t:SetPoint("TOPLEFT", 10, -6)
 	t:SetText("DeckTalk settings")
 
-	Label(editor, "Button label", 20, -32)
-	Label(editor, "Message   (%q = tracked quest, %t = target, %z = zone)", 130, -32)
+	Label(editor, "Button label", 22, -32)
+	Label(editor, "Message", 135, -32)
 
+	local order = {}
 	editor.labels, editor.texts = {}, {}
 	for i = 1, NUM_PHRASES do
-		local y = -48 - (i - 1) * 28
-		editor.labels[i] = MakeEdit(editor, 100, 20, y)
-		editor.texts[i]  = MakeEdit(editor, 360, 135, y)
+		local y = -46 - (i - 1) * 28
+		editor.labels[i] = MakeEdit(editor, 100, 24, y, 16)
+		editor.texts[i]  = MakeEdit(editor, 360, 137, y)
+		tinsert(order, editor.labels[i])
+		tinsert(order, editor.texts[i])
 	end
 
-	local y = -48 - NUM_PHRASES * 28 - 6
-	Label(editor, "Steam Deck note", 20, y)
-	editor.note = MakeEdit(editor, 475, 25, y - 14)
-	y = y - 44
-	Label(editor, "LFG message", 20, y)
-	editor.lfg = MakeEdit(editor, 475, 25, y - 14)
-	y = y - 42
-	editor.autoIntro = MakeCheck(editor, "Post note in group chat when I join a group", 16, y)
-	editor.autoReply = MakeCheck(editor, "Auto-whisper note back (once per 10 min per player)", 16, y - 26)
+	Label(editor, "Steam Deck note", 22, -276)
+	editor.note = MakeEdit(editor, 473, 24, -290)
+	Label(editor, "LFG message", 22, -318)
+	editor.lfg = MakeEdit(editor, 473, 24, -332)
+	tinsert(order, editor.note)
+	tinsert(order, editor.lfg)
 
-	local save = CreateFrame("Button", nil, editor, "UIPanelButtonTemplate")
-	save:SetSize(120, 28)
-	save:SetPoint("BOTTOMRIGHT", -14, 12)
-	save:SetText("Save")
-	save:SetScript("OnClick", function()
+	editor.preview = Label(editor, "", 22, -358, "GameFontHighlightSmall")
+	editor.preview:SetWidth(EDITOR_W - 44)
+	editor.preview:SetWordWrap(false)
+	editor.lfg:SetScript("OnTextChanged", UpdatePreview)
+
+	local help = Label(editor,
+		"Placeholders: %q tracked quest   %t target   %z zone\n" ..
+		"%w role + level + class   %r role   %l level   %c class", 22, -376, "GameFontDisableSmall")
+	help:SetWidth(EDITOR_W - 44)
+
+	-- Tab / Shift-Tab between fields
+	for i, e in ipairs(order) do
+		e:SetScript("OnTabPressed", function(self)
+			self:ClearFocus()
+			local step = IsShiftKeyDown() and -1 or 1
+			order[(i - 1 + step) % #order + 1]:SetFocus()
+		end)
+	end
+
+	editor.roleBtn = MakeButton(editor, 200, 22, 22, -408, "", function(self)
+		local idx = 1
+		for i, r in ipairs(ROLE_CYCLE) do if r == editor.role then idx = i end end
+		editor.role = ROLE_CYCLE[idx % #ROLE_CYCLE + 1]
+		self:SetText(RoleButtonText(editor.role))
+		UpdatePreview()
+	end)
+	Label(editor, "Click to change. Auto uses your current spec.", 230, -414, "GameFontDisableSmall")
+
+	editor.autoIntro = MakeCheck(editor, "Post my note in group chat when I join a group", 18, -440)
+	editor.autoReply = MakeCheck(editor, "Auto-whisper my note back (once per player per 10 min)", 18, -466)
+	editor.skipKnown = MakeCheck(editor, "...but not to friends or guild members", 40, -492)
+
+	local save = MakeButton(editor, 110, 26, 0, 0, "Save", function()
 		for i = 1, NUM_PHRASES do
 			DB.phrases[i].label = editor.labels[i]:GetText()
 			DB.phrases[i].text  = editor.texts[i]:GetText()
 		end
-		DB.note      = editor.note:GetText()
-		DB.lfgFormat = editor.lfg:GetText()
-		DB.autoIntro = editor.autoIntro:GetChecked()
-		DB.autoReply = editor.autoReply:GetChecked()
+		DB.note           = editor.note:GetText()
+		DB.lfgFormat      = editor.lfg:GetText()
+		DB.role           = editor.role
+		DB.autoIntro      = editor.autoIntro:GetChecked()
+		DB.autoReply      = editor.autoReply:GetChecked()
+		DB.replySkipKnown = editor.skipKnown:GetChecked()
 		UpdateButtons()
 		editor:Hide()
 		Print("Saved.")
 	end)
+	save:ClearAllPoints()
+	save:SetPoint("BOTTOMRIGHT", -14, 12)
 
-	local reset = CreateFrame("Button", nil, editor, "UIPanelButtonTemplate")
-	reset:SetSize(120, 28)
-	reset:SetPoint("BOTTOMLEFT", 14, 12)
-	reset:SetText("Defaults")
-	reset:SetScript("OnClick", function()
-		DB.phrases = nil; DB.note = nil; DB.lfgFormat = nil
-		CopyDefaults(DEFAULTS, DB)
-		UpdateButtons()
-		editor:Hide()
-		OpenEditor()
+	local cancel = MakeButton(editor, 110, 26, 0, 0, "Cancel", function() editor:Hide() end)
+	cancel:ClearAllPoints()
+	cancel:SetPoint("RIGHT", save, "LEFT", -8, 0)
+
+	local defaults = MakeButton(editor, 110, 26, 0, 0, "Defaults", function()
+		FillEditor(DEFAULTS)
+		Print("Defaults loaded into the editor - press Save to keep them.")
 	end)
+	defaults:ClearAllPoints()
+	defaults:SetPoint("BOTTOMLEFT", 14, 12)
+
+	if ConsolePort and ConsolePort.AddInterfaceCursorFrame then
+		pcall(ConsolePort.AddInterfaceCursorFrame, ConsolePort, editor)
+	end
 end
 
 function OpenEditor()
 	if not editor then CreateEditor() end
-	for i = 1, NUM_PHRASES do
-		editor.labels[i]:SetText(DB.phrases[i].label or "")
-		editor.texts[i]:SetText(DB.phrases[i].text or "")
-		editor.labels[i]:SetCursorPosition(0)
-		editor.texts[i]:SetCursorPosition(0)
-	end
-	editor.note:SetText(DB.note); editor.note:SetCursorPosition(0)
-	editor.lfg:SetText(DB.lfgFormat); editor.lfg:SetCursorPosition(0)
-	editor.autoIntro:SetChecked(DB.autoIntro)
-	editor.autoReply:SetChecked(DB.autoReply)
+	FillEditor(DB)
 	editor:Show()
+end
+
+---------------------------------------------------------------------------
+-- Automatic messages
+---------------------------------------------------------------------------
+local function TryIntro()
+	if not pendingIntro then return end
+	if InCombatLockdown() then return end -- retried on PLAYER_REGEN_ENABLED
+	pendingIntro = false
+	if not DB.autoIntro then return end
+	local ok, hasPlayers = pcall(GroupHasOtherPlayers) -- skip NPC-only groups
+	if not ok or not hasPlayers then return end
+	local chatType = GroupChatType()
+	if chatType then Send(DB.note, chatType, nil, true) end
+end
+
+local function IsKnown(guid)
+	if not guid then return false end
+	if C_FriendList and C_FriendList.IsFriend and C_FriendList.IsFriend(guid) then return true end
+	if C_BattleNet and C_BattleNet.GetAccountInfoByGUID and C_BattleNet.GetAccountInfoByGUID(guid) then return true end
+	if IsGuildMember and IsGuildMember(guid) then return true end
+	return false
+end
+
+local function OnWhisper(text, sender, _, _, _, flags, _, _, _, _, _, guid)
+	if not sender or sender == "" then return end
+	lastWhisperer = sender
+	UpdateTitle()
+	if not DB.autoReply then return end
+	if flags == "GM" then return end
+	if InCombatLockdown() and IsInInstance() then return end -- chat is restricted there
+	if text == DB.note then return end -- another DeckTalk user: no ping-pong
+	if DB.replySkipKnown and IsKnown(guid) then return end
+	local now = GetTime()
+	if replied[sender] and now - replied[sender] < REPLY_COOLDOWN then return end
+	replied[sender] = now
+	Send(DB.note, "WHISPER", sender, true)
 end
 
 ---------------------------------------------------------------------------
@@ -332,36 +676,41 @@ end
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("ADDON_LOADED")
 
-local function OnWhisper(text, sender)
-	if not sender or sender == "" then return end
-	lastWhisperer = sender
-	if not DB.autoReply then return end
-	if text == DB.note then return end -- another DeckTalk user, avoid ping-pong
-	local now = GetTime()
-	if replied[sender] and now - replied[sender] < REPLY_COOLDOWN then return end
-	replied[sender] = now
-	Send(DB.note, "WHISPER", sender)
-end
-
 ev:SetScript("OnEvent", function(self, event, ...)
 	if event == "ADDON_LOADED" then
 		if ... ~= ADDON then return end
 		DeckTalkDB = CopyDefaults(DEFAULTS, DeckTalkDB or {})
 		DB = DeckTalkDB
 		CreatePanel()
-		self:RegisterEvent("GROUP_JOINED")
-		self:RegisterEvent("CHAT_MSG_WHISPER")
 		self:UnregisterEvent("ADDON_LOADED")
-
-	elseif event == "GROUP_JOINED" then
-		if DB.autoIntro then
-			C_Timer.After(3, function()
-				if IsInGroup() then Send(DB.note, GroupChat()) end
-			end)
+		for _, e in ipairs({ "PLAYER_LOGIN", "GROUP_JOINED", "GROUP_LEFT", "GROUP_ROSTER_UPDATE",
+			"CHAT_MSG_WHISPER", "UPDATE_BINDINGS", "PLAYER_REGEN_ENABLED" }) do
+			self:RegisterEvent(e)
 		end
 
+	elseif event == "PLAYER_LOGIN" then
+		if ConsolePort and ConsolePort.AddInterfaceCursorFrame then
+			pcall(ConsolePort.AddInterfaceCursorFrame, ConsolePort, panel)
+		end
+		UpdateButtons()
+		UpdateTitle()
+
+	elseif event == "GROUP_JOINED" then
+		pendingIntro = true
+		C_Timer.After(3, TryIntro)
+		UpdateTitle()
+
+	elseif event == "GROUP_LEFT" or event == "GROUP_ROSTER_UPDATE" then
+		UpdateTitle()
+
+	elseif event == "PLAYER_REGEN_ENABLED" then
+		if pendingIntro then C_Timer.After(1, TryIntro) end
+
+	elseif event == "UPDATE_BINDINGS" then
+		UpdateButtons()
+
 	elseif event == "CHAT_MSG_WHISPER" then
-		-- pcall: chat payloads can be restricted ("secret") in some combat situations
+		-- pcall: chat payloads can be "secret" values in restricted situations
 		pcall(OnWhisper, ...)
 	end
 end)
@@ -370,10 +719,11 @@ end)
 -- Slash commands & binding labels
 ---------------------------------------------------------------------------
 BINDING_HEADER_DECKTALK = "DeckTalk"
-BINDING_NAME_DECKTALK_TOGGLE = "Show/hide panel"
+BINDING_NAME_DECKTALK_TOGGLE = "Show / minimize panel"
 BINDING_NAME_DECKTALK_LFG = "LFG for tracked quest"
 BINDING_NAME_DECKTALK_NOTE = "Send Steam Deck note"
 BINDING_NAME_DECKTALK_REPLY = "Whisper note to last whisperer"
+BINDING_NAME_DECKTALK_DEST = "Cycle destination (Auto/Say/Group/Whisper)"
 for i = 1, NUM_PHRASES do
 	_G["BINDING_NAME_DECKTALK_PHRASE" .. i] = "Quick phrase " .. i
 end
@@ -386,14 +736,22 @@ SlashCmdList.DECKTALK = function(msg)
 		DeckTalk_Toggle()
 	elseif cmd == "config" or cmd == "edit" then
 		OpenEditor()
+	elseif cmd == "hide" then
+		DB.shown = false
+		panel:Hide()
+	elseif cmd == "show" then
+		DB.shown, DB.collapsed = true, false
+		panel:Show()
+		ApplyCollapsed()
 	elseif cmd == "scale" and tonumber(rest) then
 		DB.scale = math.max(0.5, math.min(2, tonumber(rest)))
 		panel:SetScale(DB.scale)
+		SavePosition()
 	elseif cmd == "reset" then
 		DB.pos = nil
 		panel:ClearAllPoints()
-		panel:SetPoint("RIGHT", UIParent, "RIGHT", -40, 0)
+		panel:SetPoint("LEFT", UIParent, "LEFT", 16, 80)
 	else
-		Print("/dt - show/hide | /dt config - edit phrases | /dt scale 1.3 | /dt reset - move panel back")
+		Print("/dt - show/minimize | /dt config | /dt hide | /dt show | /dt scale 1.2 | /dt reset")
 	end
 end

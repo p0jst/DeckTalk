@@ -1,8 +1,5 @@
 <Bindings>
 	<Binding name="DECKTALK_TOGGLE" header="DECKTALK" category="ADDONS">DeckTalk_Toggle()</Binding>
-	<Binding name="DECKTALK_LFG" category="ADDONS">DeckTalk_LFG()</Binding>
-	<Binding name="DECKTALK_NOTE" category="ADDONS">DeckTalk_Note()</Binding>
-	<Binding name="DECKTALK_REPLY" category="ADDONS">DeckTalk_ReplyNote()</Binding>
 	<Binding name="DECKTALK_PHRASE1" category="ADDONS">DeckTalk_Phrase(1)</Binding>
 	<Binding name="DECKTALK_PHRASE2" category="ADDONS">DeckTalk_Phrase(2)</Binding>
 	<Binding name="DECKTALK_PHRASE3" category="ADDONS">DeckTalk_Phrase(3)</Binding>
@@ -11,4 +8,8 @@
 	<Binding name="DECKTALK_PHRASE6" category="ADDONS">DeckTalk_Phrase(6)</Binding>
 	<Binding name="DECKTALK_PHRASE7" category="ADDONS">DeckTalk_Phrase(7)</Binding>
 	<Binding name="DECKTALK_PHRASE8" category="ADDONS">DeckTalk_Phrase(8)</Binding>
+	<Binding name="DECKTALK_LFG" category="ADDONS">DeckTalk_LFG()</Binding>
+	<Binding name="DECKTALK_NOTE" category="ADDONS">DeckTalk_Note()</Binding>
+	<Binding name="DECKTALK_REPLY" category="ADDONS">DeckTalk_ReplyNote()</Binding>
+	<Binding name="DECKTALK_DEST" category="ADDONS">DeckTalk_CycleDest()</Binding>
 </Bindings>

@@ -1,9 +1,14 @@
-## Interface: 120001, 120005, 120007
+## Interface: 16001, 120100, 120105
 ## Title: DeckTalk
 ## Notes: One-tap chat for Steam Deck / controller players: quick phrases, LFG for your tracked quest, and an automatic "I'm on a Steam Deck" note.
 ## Author: Frederik
-## Version: 1.0.0
+## Version: @project-version@
 ## SavedVariables: DeckTalkDB
+## OptionalDeps: ConsolePort
 ## Category: Chat
+## IconTexture: Interface\Icons\INV_Misc_Note_02
+## AddonCompartmentFunc: DeckTalk_OnCompartmentClick
+## AddonCompartmentFuncOnEnter: DeckTalk_OnCompartmentEnter
+## AddonCompartmentFuncOnLeave: DeckTalk_OnCompartmentLeave
 
 DeckTalk.lua
