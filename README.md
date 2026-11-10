@@ -1,3 +1,5 @@
+![DeckTalk – one-tap chat for Steam Deck & controller players](media/brand/banner.png)
+
 # DeckTalk
 
 One-tap chat for **World of Warcraft: Forever** and **retail** players on **Steam Deck** or controller.

@@ -6,7 +6,7 @@
 ## SavedVariables: DeckTalkDB
 ## OptionalDeps: ConsolePort
 ## Category: Chat
-## IconTexture: Interface\Icons\INV_Misc_Note_02
+## IconTexture: Interface\AddOns\DeckTalk\media\icon
 ## AddonCompartmentFunc: DeckTalk_OnCompartmentClick
 ## AddonCompartmentFuncOnEnter: DeckTalk_OnCompartmentEnter
 ## AddonCompartmentFuncOnLeave: DeckTalk_OnCompartmentLeave
