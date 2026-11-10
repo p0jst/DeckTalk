@@ -1,0 +1,4 @@
+package-as: DeckTalk
+ignore:
+  - README.md
+  - .github
