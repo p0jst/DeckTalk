@@ -213,30 +213,35 @@ end
 ---------------------------------------------------------------------------
 -- Actions (also used by keybindings)
 ---------------------------------------------------------------------------
+-- All actions return true when a message was actually sent.
 local function SendToDest(text, btn)
 	local chatType, target, reason = ResolveDest()
-	if not chatType then Print(reason) return end
-	if Send(text, chatType, target) then Flash(btn) end
+	if not chatType then Print(reason) return false end
+	if Send(text, chatType, target) then Flash(btn) return true end
+	return false
 end
 
 function DeckTalk_Phrase(i)
-	if not DB then return end
+	if not DB then return false end
 	local p = DB.phrases[i]
-	if p and p.text ~= "" then SendToDest(p.text, phraseButtons[i]) end
+	if p and p.text ~= "" then return SendToDest(p.text, phraseButtons[i]) end
+	return false
 end
 
 function DeckTalk_Note()
-	if DB then SendToDest(DB.note, noteButton) end
+	if not DB then return false end
+	return SendToDest(DB.note, noteButton)
 end
 
 function DeckTalk_LFG()
-	if not DB then return end
+	if not DB then return false end
 	-- no tracked quest -> "LFG <zone> - Healer, lvl 18 Druid"
 	local msg = Expand(DB.lfgFormat, GetZoneText())
 	local chan = FindLFGChannel()
 	local ok
 	if chan then ok = Send(msg, "CHANNEL", chan) else ok = Send(msg, "SAY") end
 	if ok then Flash(lfgButton) end
+	return ok
 end
 
 function DeckTalk_ReplyNote()
@@ -281,19 +286,23 @@ local function KeyText(action)
 	return GetBindingText(key, true) or key
 end
 
-function UpdateTitle()
-	if not titleText then return end
+-- "Party", "Whisper Bob", or a red warning when the destination can't be used
+local function DestLabel()
 	local chatType, target = ResolveDest()
-	local where
 	if not chatType then
-		where = "|cffff5555" .. (DB.dest == "WHISPER" and "no whisper yet" or "not in a group") .. "|r"
+		return "|cffff5555" .. (DB.dest == "WHISPER" and "no whisper yet" or "not in a group") .. "|r"
 	elseif chatType == "WHISPER" then
 		local ok, short = pcall(Ambiguate, target, "short")
-		where = "|cffff80ffWhisper " .. tostring(ok and short or target) .. "|r"
-	else
-		where = CHAT_TEXT[chatType] or chatType
+		return "|cffff80ffWhisper " .. tostring(ok and short or target) .. "|r"
 	end
-	titleText:SetText("DeckTalk  |cff999999to|r " .. where)
+	return CHAT_TEXT[chatType] or chatType
+end
+
+local RefreshMenu -- quick chat menu, defined below
+
+function UpdateTitle()
+	if titleText then titleText:SetText("DeckTalk  |cff999999to|r " .. DestLabel()) end
+	if RefreshMenu then RefreshMenu() end
 end
 
 local function UpdateButtons()
@@ -454,6 +463,221 @@ end
 
 function DeckTalk_OnCompartmentLeave()
 	GameTooltip:Hide()
+end
+
+---------------------------------------------------------------------------
+-- Quick chat menu: one bind opens it, D-pad / arrows choose, A / Enter send.
+-- Needs no cursor, so it works in WoW: Forever's native Gamepad mode, with
+-- ConsolePort, and with Steam Input keyboard mappings alike.
+---------------------------------------------------------------------------
+local menu
+local menuItems, menuSel, menuIdle = {}, 1, nil
+local pendingUnbind = false
+local MENU_W, ROW_H, MENU_TOP, MENU_FOOT = 320, 30, 34, 58
+local MENU_ROWS = NUM_PHRASES + 2
+local MENU_IDLE = 12 -- seconds before the menu closes by itself
+
+-- Keys captured only while the menu is open (released again on close / before combat)
+local MENU_KEYS = {
+	PADDUP = "DeckTalkMenuUp",     UP = "DeckTalkMenuUp",
+	PADDDOWN = "DeckTalkMenuDown", DOWN = "DeckTalkMenuDown",
+	PAD1 = "DeckTalkMenuSend",     ENTER = "DeckTalkMenuSend",
+	PAD2 = "DeckTalkMenuClose",    ESCAPE = "DeckTalkMenuClose",
+	PADDLEFT = "DeckTalkMenuLeft", LEFT = "DeckTalkMenuLeft",
+	PADDRIGHT = "DeckTalkMenuRight", RIGHT = "DeckTalkMenuRight",
+}
+
+local function GamePadOn()
+	if C_GamePad and C_GamePad.IsEnabled then
+		local ok, on = pcall(C_GamePad.IsEnabled)
+		if ok and on then return true end
+	end
+	return GetCVarBool and GetCVarBool("GamePadEnable") or false
+end
+
+local function BuildMenuItems()
+	wipe(menuItems)
+	for i = 1, NUM_PHRASES do
+		local p = DB.phrases[i]
+		if p and p.text ~= "" then
+			tinsert(menuItems, {
+				label = (p.label ~= "" and p.label) or p.text,
+				run = function() return DeckTalk_Phrase(i) end,
+				preview = function() return Expand(p.text) end,
+			})
+		end
+	end
+	tinsert(menuItems, { label = "|cff00ff00LFG: quest|r", run = DeckTalk_LFG,
+		preview = function() return Expand(DB.lfgFormat, GetZoneText()) .. "  |cff999999(LFG channel)|r" end })
+	tinsert(menuItems, { label = "|cffffcc00Deck note|r", run = DeckTalk_Note,
+		preview = function() return DB.note end })
+	if menuSel > #menuItems then menuSel = 1 end
+end
+
+local function MenuHint()
+	local next, send = KeyText("DECKTALK_MENU"), KeyText("DECKTALK_MENU_SEND")
+	local extra = (next ~= "" and ("   " .. next .. ": next") or "") .. (send ~= "" and ("   " .. send .. ": send") or "")
+	if not menu.captured then
+		return "|cffff9933In combat:|r tap a row" .. extra
+	end
+	if GamePadOn() then
+		return "D-pad: choose   A: send   B: close   Left/Right: where" .. extra
+	end
+	return "Up/Down: choose   Enter: send   Esc: close   Left/Right: where" .. extra
+end
+
+RefreshMenu = function()
+	if not menu or not menu:IsShown() then return end
+	for i = 1, MENU_ROWS do
+		local row, item = menu.rows[i], menuItems[i]
+		row:SetShown(item ~= nil)
+		if item then
+			row.text:SetText(item.label)
+			row.text:SetTextColor(1, 1, 1)
+		end
+	end
+	local selRow = menu.rows[menuSel]
+	menu.sel:ClearAllPoints()
+	menu.sel:SetPoint("TOPLEFT", selRow, "TOPLEFT", 0, 0)
+	menu.sel:SetPoint("BOTTOMRIGHT", selRow, "BOTTOMRIGHT", 0, 0)
+	menu.title:SetText("Quick chat  |cff999999to|r " .. DestLabel())
+	local item = menuItems[menuSel]
+	menu.preview:SetText(item and ("|cff999999Sends:|r " .. item.preview()) or "")
+	menu.hint:SetText(MenuHint())
+	menu:SetHeight(MENU_TOP + #menuItems * ROW_H + MENU_FOOT)
+end
+
+local function ReleaseKeys()
+	if not menu or not menu.captured then return end
+	if InCombatLockdown() then pendingUnbind = true return end
+	ClearOverrideBindings(menu)
+	menu.captured = false
+	pendingUnbind = false
+end
+
+local function CaptureKeys()
+	if menu.captured or InCombatLockdown() then return end
+	for key, button in pairs(MENU_KEYS) do
+		SetOverrideBindingClick(menu, true, key, button)
+	end
+	menu.captured = true
+end
+
+local function MenuIdle()
+	if menuIdle then menuIdle:Cancel() end
+	menuIdle = C_Timer.NewTimer(MENU_IDLE, function() menuIdle = nil menu:Hide() end)
+end
+
+local function MenuMove(step)
+	local n = #menuItems
+	if n == 0 then return end
+	menuSel = (menuSel - 1 + step) % n + 1
+	RefreshMenu()
+	MenuIdle()
+end
+
+local function MenuSend()
+	local item = menuItems[menuSel]
+	if not item then return end
+	if item.run() then menu:Hide() else MenuIdle() end -- stay open if it couldn't send
+end
+
+local function MenuDest(step)
+	local idx = 1
+	for i, d in ipairs(DESTS) do if d == DB.dest then idx = i end end
+	SetDest(DESTS[(idx - 1 + step) % #DESTS + 1]) -- also refreshes the menu
+	MenuIdle()
+end
+
+local function CreateMenu()
+	menu = CreateFrame("Frame", "DeckTalkMenu", UIParent, "BasicFrameTemplateWithInset")
+	menu:SetSize(MENU_W, MENU_TOP + MENU_ROWS * ROW_H + MENU_FOOT)
+	menu:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+	menu:SetFrameStrata("DIALOG")
+	menu:SetClampedToScreen(true)
+	menu:EnableMouse(true)
+	menu:Hide()
+	tinsert(UISpecialFrames, "DeckTalkMenu") -- Esc also closes when keys aren't captured
+	if menu.CloseButton then menu.CloseButton:SetScript("OnClick", function() menu:Hide() end) end
+
+	menu.title = menu:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	menu.title:SetPoint("TOPLEFT", 10, -6)
+	menu.title:SetWidth(MENU_W - 40)
+	menu.title:SetJustifyH("LEFT")
+	menu.title:SetWordWrap(false)
+
+	menu.sel = menu:CreateTexture(nil, "ARTWORK")
+	menu.sel:SetColorTexture(0.27, 0.88, 0.82, 0.28)
+
+	menu.rows = {}
+	for i = 1, MENU_ROWS do
+		local row = CreateFrame("Button", nil, menu)
+		row:SetSize(MENU_W - 24, ROW_H - 2)
+		row:SetPoint("TOPLEFT", 12, -MENU_TOP - (i - 1) * ROW_H)
+		row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+		row.text:SetPoint("LEFT", 10, 0)
+		row.text:SetWidth(MENU_W - 48)
+		row.text:SetJustifyH("LEFT")
+		row.text:SetWordWrap(false)
+		local hl = row:CreateTexture(nil, "HIGHLIGHT")
+		hl:SetAllPoints()
+		hl:SetColorTexture(1, 1, 1, 0.08)
+		row:SetScript("OnClick", function() menuSel = i MenuSend() end)
+		menu.rows[i] = row
+	end
+
+	menu.preview = menu:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	menu.preview:SetPoint("BOTTOMLEFT", 14, 32)
+	menu.preview:SetWidth(MENU_W - 28)
+	menu.preview:SetJustifyH("LEFT")
+	menu.preview:SetWordWrap(false)
+
+	menu.hint = menu:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	menu.hint:SetPoint("BOTTOMLEFT", 14, 12)
+	menu.hint:SetWidth(MENU_W - 28)
+	menu.hint:SetJustifyH("LEFT")
+	menu.hint:SetWordWrap(false)
+
+	-- invisible buttons the captured keys "click" (key presses count as hardware events)
+	local actions = {
+		DeckTalkMenuUp = function() MenuMove(-1) end,
+		DeckTalkMenuDown = function() MenuMove(1) end,
+		DeckTalkMenuSend = MenuSend,
+		DeckTalkMenuClose = function() menu:Hide() end,
+		DeckTalkMenuLeft = function() MenuDest(-1) end,
+		DeckTalkMenuRight = function() MenuDest(1) end,
+	}
+	for name, fn in pairs(actions) do
+		local b = CreateFrame("Button", name, menu)
+		b:SetSize(1, 1)
+		b:SetScript("OnClick", fn)
+	end
+
+	menu:SetScript("OnHide", function()
+		if menuIdle then menuIdle:Cancel() menuIdle = nil end
+		ReleaseKeys()
+	end)
+
+	if ConsolePort and ConsolePort.AddInterfaceCursorFrame then
+		pcall(ConsolePort.AddInterfaceCursorFrame, ConsolePort, menu)
+	end
+end
+
+-- Bind 1: open, or move to the next entry when already open
+function DeckTalk_QuickMenu()
+	if not DB then return end
+	if not menu then CreateMenu() end
+	if menu:IsShown() then MenuMove(1) return end
+	BuildMenuItems()
+	menu:Show()
+	CaptureKeys()
+	RefreshMenu()
+	MenuIdle()
+end
+
+-- Bind 2: send the selected entry (for back-button-only setups)
+function DeckTalk_MenuSend()
+	if menu and menu:IsShown() then MenuSend() end
 end
 
 ---------------------------------------------------------------------------
@@ -684,7 +908,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
 		CreatePanel()
 		self:UnregisterEvent("ADDON_LOADED")
 		for _, e in ipairs({ "PLAYER_LOGIN", "GROUP_JOINED", "GROUP_LEFT", "GROUP_ROSTER_UPDATE",
-			"CHAT_MSG_WHISPER", "UPDATE_BINDINGS", "PLAYER_REGEN_ENABLED" }) do
+			"CHAT_MSG_WHISPER", "UPDATE_BINDINGS", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED" }) do
 			self:RegisterEvent(e)
 		end
 
@@ -703,11 +927,19 @@ ev:SetScript("OnEvent", function(self, event, ...)
 	elseif event == "GROUP_LEFT" or event == "GROUP_ROSTER_UPDATE" then
 		UpdateTitle()
 
+	elseif event == "PLAYER_REGEN_DISABLED" then
+		-- fires just before combat lockdown: hand the D-pad / Enter / Esc back to the game
+		ReleaseKeys()
+		RefreshMenu()
+
 	elseif event == "PLAYER_REGEN_ENABLED" then
 		if pendingIntro then C_Timer.After(1, TryIntro) end
+		if pendingUnbind then ReleaseKeys() end
+		if menu and menu:IsShown() then CaptureKeys() RefreshMenu() end
 
 	elseif event == "UPDATE_BINDINGS" then
 		UpdateButtons()
+		RefreshMenu()
 
 	elseif event == "CHAT_MSG_WHISPER" then
 		-- pcall: chat payloads can be "secret" values in restricted situations
@@ -719,6 +951,8 @@ end)
 -- Slash commands & binding labels
 ---------------------------------------------------------------------------
 BINDING_HEADER_DECKTALK = "DeckTalk"
+BINDING_NAME_DECKTALK_MENU = "Quick chat menu (press again: next)"
+BINDING_NAME_DECKTALK_MENU_SEND = "Quick chat: send selected"
 BINDING_NAME_DECKTALK_TOGGLE = "Show / minimize panel"
 BINDING_NAME_DECKTALK_LFG = "LFG for tracked quest"
 BINDING_NAME_DECKTALK_NOTE = "Send Steam Deck note"

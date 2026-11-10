@@ -45,7 +45,7 @@
   </defs>
 
   <!-- background -->
-  <rect width="512" height="512" fill="#0a0a1f"/>
+  <rect x="4" y="4" width="504" height="504" rx="67" fill="#0a0a1f"/>
   <g clip-path="url(#frameClip)">
     <rect width="512" height="512" fill="url(#bg)"/>
     <!-- faint arcane rings -->

@@ -9,17 +9,17 @@ Everything you need for the CurseForge authors portal, ready to paste.
 | Field | Value |
 |---|---|
 | **Name** | DeckTalk |
-| **Summary** | One-tap chat for controller play: quick phrases, LFG for your tracked quest with role & level, and an auto "I'm on a Steam Deck" note. |
+| **Summary** | Chat without typing: a D-pad Quick chat menu, one-tap LFG for your tracked quest with role & level, and an auto "I'm on a Steam Deck" note. |
 | **Primary category** | Chat & Communication |
 | **Additional category** | Quests & Leveling |
-| **Game versions** | WoW: Forever, Retail |
+| **Game versions** | WoW: Forever (main focus), Retail |
 | **License** | MIT |
 | **Source** | https://github.com/p0jst/DeckTalk |
 | **Issues** | https://github.com/p0jst/DeckTalk/issues |
 | **Logo** | `media/brand/logo-1024.png` (CurseForge crops and resizes to 400×400) |
 
 **Shorter summary**, if you want it to fit on one line in search results:
-> Quick-phrase chat buttons and keybinds, one-tap LFG, and an auto "I'm on a Steam Deck" note.
+> A D-pad Quick chat menu, one-tap LFG, and an auto "I'm on a Steam Deck" note.
 
 ---
 
@@ -28,10 +28,15 @@ Everything you need for the CurseForge authors portal, ready to paste.
 ![DeckTalk – one-tap chat for Steam Deck & controller players](https://raw.githubusercontent.com/p0jst/DeckTalk/main/media/brand/banner.png)
 
 **Typing on a Steam Deck is slow, and the on-screen keyboard always seems to pop up mid-pull.**
-DeckTalk puts the things you say all the time on buttons and keybinds. "Thanks!", an LFG post or "inv please?" takes one press.
+DeckTalk puts the things you say all the time one button press away. Open the **Quick chat menu**, pick with the D-pad and press A, and "Thanks!", an LFG post or "inv please?" is sent. It's made for WoW: Forever's new Gamepad mode and the Steam Deck, and works on retail too.
 
 ## Features
 
+- **Quick chat menu.** One bind opens it:
+  - **D-pad** chooses, **A** sends, **B** closes.
+  - **Left/Right** changes where the message goes.
+  - The bottom line shows exactly what will be sent.
+  - No cursor needed, so it works with WoW: Forever's native Gamepad mode, ConsolePort or Steam Input keyboard mappings. Arrow keys, Enter and Esc work too.
 - **8 quick phrases**: *Hi!, Thanks!, Yes, No, One sec, Sorry!, Inv please?, Group up?* All of them are editable.
 - **Choose where messages go**:
   - **Auto**: group chat when you're grouped, /say when you're solo
@@ -51,11 +56,21 @@ DeckTalk puts the things you say all the time on buttons and keybinds. "Thanks!"
 - **ConsolePort-friendly**: works with the ConsolePort cursor.
 - **Lightweight**: no libraries, no dependencies, no data collection.
 
-## Steam Deck setup (2 minutes)
+## Controller setup
 
-1. In WoW, open **Esc → Options → Keybindings → AddOns → DeckTalk** and bind the phrases you use most to unused keys, for example `F7`–`F12`.
-2. In Steam, open **Controller settings** and map the back grip buttons (**L4 / L5 / R4 / R5**) to those same keys.
-3. That's it. The small key labels on the DeckTalk buttons show what's bound where.
+DeckTalk uses WoW's own keybindings, so it works with whatever controller setup you already have.
+
+**WoW: Forever, built-in Gamepad mode**
+1. Turn on **Options → Gamepad (Alpha)**.
+2. Open **Keybindings → AddOns → DeckTalk** and bind **Quick chat menu** to a button or button combo.
+3. Press it, then use the D-pad to choose, **A** to send and **B** to close.
+
+**Steam Deck back buttons (Forever and retail)**
+1. In Steam → **Controller settings**, map **L4** to `F7` and **R4** to `F8`.
+2. In WoW keybindings, set **Quick chat menu** = `F7` and **Quick chat: send selected** = `F8`.
+3. Press L4 to open the menu (press it again for the next entry) and R4 to send. That's every message on two buttons. L5/R5 are free for LFG or your note.
+
+**Retail:** Retail only has a basic built-in gamepad mode. Use the back-button setup above, or ConsolePort. DeckTalk works with the ConsolePort cursor.
 
 **Tip:** To write your own phrases, click **Edit** on the panel (or type `/dt config`) and press **Steam + X** to bring up the keyboard. You only have to do this once.
 
@@ -95,6 +110,12 @@ Yes. Blizzard restricts addon chat during combat inside instances. DeckTalk wait
 **My spec doesn't match the role I want to advertise.**
 Open settings and click the **Role** button to set Tank, Healer or DPS yourself. *Auto* goes back to using your spec.
 
+**Do I need ConsolePort?**
+No. In WoW: Forever, the built-in Gamepad mode is enough. On retail, Steam Deck back buttons mapped to keys work without it. ConsolePort is supported if you already use it.
+
+**Does the Quick chat menu block my D-pad?**
+Only while it's open. It hands the D-pad, arrows, Enter and Esc back when it closes, after 12 seconds of no input, and right before combat starts.
+
 **Do I need a Steam Deck?**
 No. DeckTalk works just as well with any controller setup, couch play or one-handed play.
 
@@ -110,10 +131,11 @@ Found a bug or have an idea? Open an issue on [GitHub](https://github.com/p0jst/
 
 ## Screenshots to take in-game (upload under Images)
 
-CurseForge wants real in-game screenshots. These five show the addon best:
+CurseForge wants real in-game screenshots. These six show the addon best:
 
-1. **The panel**, expanded, with a couple of keybinds set so the key labels show.
-2. **An LFG post in chat** with the clickable quest link, e.g. in a starting zone.
-3. **The settings window**, ideally with the LFG preview line visible.
-4. **The minimized bar** in a corner of a normal game screen, to show how small it gets.
-5. **Steam's controller settings**, with the back buttons mapped to F-keys.
+1. **The Quick chat menu** open in the world, with a phrase selected.
+2. **The panel**, expanded, with a couple of keybinds set so the key labels show.
+3. **An LFG post in chat** with the clickable quest link, e.g. in a starting zone.
+4. **The settings window**, ideally with the LFG preview line visible.
+5. **The minimized bar** in a corner of a normal game screen, to show how small it gets.
+6. **Steam's controller settings**, with the back buttons mapped to F-keys.
