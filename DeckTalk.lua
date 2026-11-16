@@ -41,6 +41,7 @@ local CATALOG = {
 	{ label = "On my way",    text = "On my way!" },
 	{ label = "BRB",          text = "BRB, back in a minute." },
 	{ label = "Thanks, bye!", text = "Thanks for the group, bye!" },
+	{ label = "Buff please?", text = "Could I get a buff, please?" },
 }
 
 local NOTES = {
@@ -948,7 +949,7 @@ end
 -- whether the panel is on screen. Works with cursor, D-pad or keyboard.
 -- "A, A" accepts the defaults.
 ---------------------------------------------------------------------------
-local SETUP_W, SETUP_H = 440, 344
+local SETUP_W, SETUP_H = 440, 370
 local SETUP_KEYS = NavKeys("DeckTalkSetup")
 local setupPending = false
 local RefreshSetup
@@ -1220,8 +1221,8 @@ local function CreateSetup()
 		setup.options[i] = row
 		tinsert(p1.items, row)
 	end
-	setup.counter = Label(p1, "", 24, -240, "GameFontNormalSmall")
-	setup.sends = Label(p1, "", 24, -256, "GameFontHighlightSmall")
+	setup.counter = Label(p1, "", 24, -266, "GameFontNormalSmall")
+	setup.sends = Label(p1, "", 24, -282, "GameFontHighlightSmall")
 	setup.sends:SetWidth(SETUP_W - 48)
 	setup.sends:SetWordWrap(false)
 	setup.nextBtn = BottomButton(p1, "Next", 0, function() SetupPage(2) end)

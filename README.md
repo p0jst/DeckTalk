@@ -14,7 +14,7 @@ plus a small panel and keybinds for the things you say all the time.
   - The bottom line shows exactly what will be sent.
   - No cursor needed, so it works in WoW: Forever's native Gamepad mode, with ConsolePort, or with Steam Input keyboard mappings.
 - **First-run setup in three steps.** The first time you log in, DeckTalk asks which standard messages you want
-  (pick up to 6 of 12), your auto-reply note (start from a Steam Deck, controller or handheld text and edit it freely) and whether you want
+  (pick up to 6 of 13), your auto-reply note (start from a Steam Deck, controller or handheld text and edit it freely) and whether you want
   the panel on screen. The last step binds Quick chat: press **Choose button**, then the button or
   combo you want. No trip to the keybinding screen. Run it again with `/dt setup`.
 - **Up to 6 quick phrases**: "Hi!", "Thanks!", "Yes", "No", "Inv please?"… all editable.

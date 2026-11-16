@@ -5,7 +5,7 @@
 ### Added
 - **WoW: Forever support.** One download works in Forever and retail.
 - **Quick chat menu.** One button opens it: D-pad chooses, A sends, B closes, Left/Right changes where the message goes. No cursor needed.
-- **First-time setup.** Pick up to 6 of 12 standard messages, write your own auto-reply note from a starting text, and choose your Quick chat button by pressing it.
+- **First-time setup.** Pick up to 6 of 13 standard messages, write your own auto-reply note from a starting text, and choose your Quick chat button by pressing it.
 - **Choose where messages go** with the title-bar button: Auto, Say, Group or Whisper.
 - **Auto answers whispers.** When you're not in a group, Auto replies to a whisper from the last 2 minutes.
 - **LFG posts your role, level and class**, for example `LFG [The Defias Brotherhood] - Healer, lvl 18 Druid`. With no tracked quest it posts your zone.
