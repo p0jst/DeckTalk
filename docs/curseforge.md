@@ -49,7 +49,7 @@ DeckTalk puts the things you say all the time one button press away. Open the **
 - **One-tap LFG** posts your tracked quest as a clickable link, with your role, level and class:
   `LFG [The Defias Brotherhood] - Healer, lvl 18 Druid`
   The role comes from your current spec, or you can set Tank / Healer / DPS yourself. With no quest tracked, it posts your zone instead.
-- **Your Steam Deck note**: *"I'm playing on a Steam Deck and typing is slow - sorry if I don't reply much!"*
+- **Your own "slow typer" note**, for example *"I'm playing on a Steam Deck and typing is slow - sorry if I don't reply much!"* Write it in your own words during setup.
   - Optionally posted in group chat when you join a group. It skips NPC-only groups and waits until combat ends.
   - Optionally whispered back to people who whisper you. It answers in-game and Battle.net whispers, only the first time each person writes in a session.
 - **Built for back buttons.** Everything can be keybound, and every button shows its key, so the panel doubles as a cheat sheet.
