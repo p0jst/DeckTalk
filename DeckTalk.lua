@@ -1008,8 +1008,15 @@ RefreshSetup = function()
 	setup.counter:SetText(count .. " of " .. NUM_PHRASES .. " chosen" ..
 		(count >= NUM_PHRASES and "  |cffff9933(untick one to swap)|r" or ""))
 
-	for k, row in ipairs(setup.noteOpts) do SetOption(row, setup.noteIdx == k) end
-	setup.notePreview:SetText("\"" .. (setup.noteIdx and NOTES[setup.noteIdx].text or DB.note) .. "\"")
+	local note = setup.noteEdit:GetText()
+	for k, row in ipairs(setup.noteOpts) do SetOption(row, NOTES[k].text == note) end
+	if setup.noteEdit:HasFocus() then
+		setup.noteHelp:SetText("|cffffcc00Typing...|r Press Enter when you're done.")
+	elseif note:match("^%s*$") then
+		setup.noteHelp:SetText("|cffff5555Empty|r - pick a starting point above.")
+	else
+		setup.noteHelp:SetText(#note .. "/255  -  Select the field and press A to type (Steam + X opens the keyboard).")
+	end
 	SetOption(setup.checks.intro, setup.autoIntro)
 	SetOption(setup.checks.reply, setup.autoReply)
 	SetOption(setup.checks.panel, setup.showPanel)
@@ -1033,6 +1040,7 @@ RefreshSetup = function()
 end
 
 local function SetupMove(dx, dy)
+	if setup.noteEdit:HasFocus() then setup.noteEdit:ClearFocus() end -- D-pad leaves the text field
 	local page = setup.pages[setup.page]
 	local idx = setup.focus[setup.page] + dx + dy * page.cols
 	if idx >= 1 and idx <= #page.items then
@@ -1067,7 +1075,8 @@ local function SetupFinish()
 		for i = #list + 1, NUM_PHRASES do list[i] = { label = "", text = "" } end
 		DB.phrases = list
 	end
-	if setup.noteIdx then DB.note = NOTES[setup.noteIdx].text end
+	local note = setup.noteEdit:GetText():gsub("^%s+", ""):gsub("%s+$", "")
+	if note ~= "" then DB.note = note end
 	DB.autoIntro = setup.autoIntro
 	DB.autoReply = setup.autoReply
 	DB.setupDone = true
@@ -1143,18 +1152,26 @@ local function CreateSetup()
 
 	-- page 2: note + panel ---------------------------------------------------
 	local p2 = Page(1)
-	Label(p2, "Your \"slow typer\" note", 22, -34, "GameFontNormalLarge")
-	Label(p2, "Tells other players why you're quiet. What are you playing on?", 22, -56, "GameFontHighlightSmall")
+	Label(p2, "Your auto-reply note", 22, -34, "GameFontNormalLarge")
+	Label(p2, "Pick a starting point, then change the text to your own words:", 22, -56, "GameFontHighlightSmall")
 	for k, n in ipairs(NOTES) do
-		local row = MakeOption(p2, 380, 24, -78 - (k - 1) * 26, n.label, function()
-			setup.noteIdx = k
+		local row = MakeOption(p2, 124, 24 + (k - 1) * 130, -76, n.label, function()
+			setup.noteEdit:SetText(NOTES[k].text)
+			setup.noteEdit:SetCursorPosition(0)
 			RefreshSetup()
 		end)
 		setup.noteOpts[k] = row
 		tinsert(p2.items, row)
 	end
-	setup.notePreview = Label(p2, "", 26, -160, "GameFontDisableSmall")
-	setup.notePreview:SetWidth(SETUP_W - 52)
+	local edit = MakeEdit(p2, SETUP_W - 56, 30, -104, 255)
+	edit:SetScript("OnTextChanged", function() RefreshSetup() end)
+	edit:SetScript("OnEditFocusGained", function() RefreshSetup() end)
+	edit:SetScript("OnEditFocusLost", function() RefreshSetup() end)
+	edit.Click = function(self) self:SetFocus() end -- A / Enter on the field starts typing
+	setup.noteEdit = edit
+	tinsert(p2.items, edit)
+	setup.noteHelp = Label(p2, "", 26, -130, "GameFontDisableSmall")
+	setup.noteHelp:SetWidth(SETUP_W - 52)
 	local function Check(key, y, text, field)
 		local row = MakeOption(p2, 392, 24, y, text, function()
 			setup[field] = not setup[field]
@@ -1163,9 +1180,9 @@ local function CreateSetup()
 		setup.checks[key] = row
 		tinsert(p2.items, row)
 	end
-	Check("intro", -194, "Post the note in group chat when I join a group", "autoIntro")
-	Check("reply", -220, "Whisper the note back to people who whisper me", "autoReply")
-	Check("panel", -246, "Keep the small button panel on screen", "showPanel")
+	Check("intro", -164, "Post the note in group chat when I join a group", "autoIntro")
+	Check("reply", -190, "Whisper the note back to people who whisper me", "autoReply")
+	Check("panel", -216, "Keep the small button panel on screen", "showPanel")
 	setup.backBtn = BottomButton(p2, "Back", 1, function() SetupPage(1) end)
 	setup.finishBtn = BottomButton(p2, "Finish", 0, SetupFinish)
 	tinsert(p2.items, setup.backBtn)
@@ -1196,6 +1213,7 @@ local function CreateSetup()
 	})
 
 	setup:SetScript("OnHide", function()
+		setup.noteEdit:ClearFocus()
 		ReleaseKeys(setup)
 		if not DB.setupDone then
 			DB.setupDone = true
@@ -1221,8 +1239,8 @@ function OpenSetup()
 		setup.sel[i] = used[c.text] or false
 		setup.initial[i] = setup.sel[i]
 	end
-	setup.noteIdx = nil
-	for k, n in ipairs(NOTES) do if n.text == DB.note then setup.noteIdx = k end end
+	setup.noteEdit:SetText(DB.note or "")
+	setup.noteEdit:SetCursorPosition(0)
 	setup.autoIntro, setup.autoReply = DB.autoIntro and true or false, DB.autoReply and true or false
 	setup.showPanel = DB.shown and true or false
 	setup.page = 1
