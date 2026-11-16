@@ -62,6 +62,8 @@ local CHANNEL_COOLDOWN = 3   -- debounce for LFG/General (spam protection)
 
 local DB
 local lastWhisperer
+local lastWhisperAt = 0
+local WHISPER_WINDOW = 120 -- Auto replies to a whisper this fresh (when not in a group)
 local replied = {}
 local lastSendAt = { CHAT = 0, CHANNEL = 0 }
 local pendingIntro = false
@@ -155,15 +157,11 @@ local function Tidy(s)
 	return s
 end
 
--- %q quest  %t target  %z zone  %w role+level+class  %r role  %l level  %c class
+-- %q quest  %t target  %w role+level+class
 local function Expand(msg, questFallback)
 	msg = msg:gsub("%%q", function() return GetQuestText() or questFallback or "this quest" end)
 	msg = msg:gsub("%%t", function() return (UnitName("target")) or "" end)
-	msg = msg:gsub("%%z", function() return GetZoneText() or "" end)
 	msg = msg:gsub("%%w", function() return WhoText() end)
-	msg = msg:gsub("%%r", function() local r = GetRole() return r and ROLE_TEXT[r] or "" end)
-	msg = msg:gsub("%%l", function() return tostring(UnitLevel("player") or "") end)
-	msg = msg:gsub("%%c", function() return (UnitClass("player")) or "" end)
 	return Tidy(msg)
 end
 
@@ -186,7 +184,10 @@ local function ResolveDest()
 		if lastWhisperer then return "WHISPER", lastWhisperer end
 		return nil, nil, "Nobody has whispered you yet."
 	end
-	return GroupChatType() or "SAY"
+	local g = GroupChatType()
+	if g then return g end
+	if lastWhisperer and GetTime() - lastWhisperAt < WHISPER_WINDOW then return "WHISPER", lastWhisperer end
+	return "SAY"
 end
 
 local function GroupHasOtherPlayers()
@@ -277,12 +278,6 @@ function DeckTalk_LFG()
 	if chan then ok = Send(msg, "CHANNEL", chan) else ok = Send(msg, "SAY") end
 	if ok then Flash(lfgButton) end
 	return ok
-end
-
-function DeckTalk_ReplyNote()
-	if not DB then return end
-	if not lastWhisperer then Print("Nobody has whispered you yet.") return end
-	Send(DB.note, "WHISPER", lastWhisperer)
 end
 
 local function SetDest(d)
@@ -430,7 +425,7 @@ local function MakeActionButton(onClick)
 end
 
 local DEST_HELP = {
-	AUTO = "Auto: group chat when you're in a group, otherwise /say",
+	AUTO = "Auto: group chat in a group. Alone: answers a whisper from the last 2 minutes, otherwise /say",
 	SAY = "Say: players nearby",
 	GROUP = "Group: party / raid / instance chat",
 	WHISPER = "Whisper: the last person who whispered you",
@@ -500,7 +495,7 @@ local function CreatePanel()
 	end)
 
 	noteButton = MakeActionButton(DeckTalk_Note)
-	noteButton.baseText = "|cffffcc00Deck note|r"
+	noteButton.baseText = "|cffffcc00My note|r"
 	noteButton:SetText(noteButton.baseText)
 	AddTooltip(noteButton, function() return DB.note end)
 
@@ -607,7 +602,7 @@ local function BuildMenuItems()
 	end
 	tinsert(menuItems, { label = "|cff00ff00LFG: quest|r", run = DeckTalk_LFG,
 		preview = function() return "|cff999999Sends:|r " .. Expand(DB.lfgFormat, GetZoneText()) .. "  |cff999999(LFG channel)|r" end })
-	tinsert(menuItems, { label = "|cffffcc00Deck note|r", run = DeckTalk_Note,
+	tinsert(menuItems, { label = "|cffffcc00My note|r", run = DeckTalk_Note,
 		preview = function() return "|cff999999Sends:|r " .. DB.note end })
 	if panel and not panel:IsShown() then
 		tinsert(menuItems, { label = "|cff999999Show panel|r", run = function() ShowPanel() return true end,
@@ -765,7 +760,7 @@ end
 -- Settings editor
 ---------------------------------------------------------------------------
 local editor
-local EDITOR_W, EDITOR_H = 520, 516
+local EDITOR_W, EDITOR_H = 520, 478
 
 local function MakeEdit(parent, w, x, y, maxLetters)
 	local e = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
@@ -825,7 +820,6 @@ local function FillEditor(src)
 	editor.roleBtn:SetText(RoleButtonText(editor.role))
 	editor.autoIntro:SetChecked(src.autoIntro)
 	editor.autoReply:SetChecked(src.autoReply)
-	editor.skipKnown:SetChecked(src.replySkipKnown)
 	UpdatePreview()
 end
 
@@ -860,7 +854,7 @@ local function CreateEditor()
 		y = y - 28
 	end
 
-	Label(editor, "Steam Deck note", 22, y - 6)
+	Label(editor, "My note (also the auto-reply)", 22, y - 6)
 	editor.note = MakeEdit(editor, 473, 24, y - 20)
 	Label(editor, "LFG message", 22, y - 48)
 	editor.lfg = MakeEdit(editor, 473, 24, y - 62)
@@ -873,8 +867,7 @@ local function CreateEditor()
 	editor.lfg:SetScript("OnTextChanged", UpdatePreview)
 
 	local help = Label(editor,
-		"Placeholders: %q tracked quest   %t target   %z zone\n" ..
-		"%w role + level + class   %r role   %l level   %c class", 22, y - 106, "GameFontDisableSmall")
+		"You can use:  %q tracked quest    %t target's name    %w role, level, class", 22, y - 106, "GameFontDisableSmall")
 	help:SetWidth(EDITOR_W - 44)
 
 	-- Tab / Shift-Tab between fields
@@ -886,18 +879,17 @@ local function CreateEditor()
 		end)
 	end
 
-	editor.roleBtn = MakeButton(editor, 200, 22, 22, y - 138, "", function(self)
+	editor.roleBtn = MakeButton(editor, 200, 22, 22, y - 126, "", function(self)
 		local idx = 1
 		for i, r in ipairs(ROLE_CYCLE) do if r == editor.role then idx = i end end
 		editor.role = ROLE_CYCLE[idx % #ROLE_CYCLE + 1]
 		self:SetText(RoleButtonText(editor.role))
 		UpdatePreview()
 	end)
-	Label(editor, "Click to change. Auto uses your current spec.", 230, y - 144, "GameFontDisableSmall")
+	Label(editor, "Click to change. Auto uses your current spec.", 230, y - 132, "GameFontDisableSmall")
 
-	editor.autoIntro = MakeCheck(editor, "Post my note in group chat when I join a group", 18, y - 170)
-	editor.autoReply = MakeCheck(editor, "Auto-whisper my note back (once per player per 10 min)", 18, y - 196)
-	editor.skipKnown = MakeCheck(editor, "...but not to friends or guild members", 40, y - 222)
+	editor.autoIntro = MakeCheck(editor, "Post my note in group chat when I join a group", 18, y - 156)
+	editor.autoReply = MakeCheck(editor, "Whisper my note back to strangers who whisper me", 18, y - 182)
 
 	local save = MakeButton(editor, 100, 26, 0, 0, "Save", function()
 		for i = 1, NUM_PHRASES do
@@ -909,7 +901,6 @@ local function CreateEditor()
 		DB.role           = editor.role
 		DB.autoIntro      = editor.autoIntro:GetChecked()
 		DB.autoReply      = editor.autoReply:GetChecked()
-		DB.replySkipKnown = editor.skipKnown:GetChecked()
 		Layout()
 		editor:Hide()
 		Print("Saved.")
@@ -997,9 +988,12 @@ end
 RefreshSetup = function()
 	if not setup or not setup:IsShown() then return end
 	local p = setup.page
-	setup.title:SetText("DeckTalk setup  |cff999999(" .. p .. " of 2)|r")
-	setup.pages[1]:SetShown(p == 1)
-	setup.pages[2]:SetShown(p == 2)
+	setup.title:SetText("DeckTalk setup  |cff999999(" .. p .. " of 3)|r")
+	for i, page in ipairs(setup.pages) do page:SetShown(i == p) end
+
+	local bound = KeyText("DECKTALK_MENU")
+	setup.bindStatus:SetText("Quick chat button:  " .. (bound ~= "" and ("|cff33ff33" .. bound .. "|r") or "|cffff9933none yet|r"))
+	setup.chooseBtn:SetText(bound ~= "" and "Change button" or "Choose button")
 
 	local count = SetupCount()
 	for i, row in ipairs(setup.options) do
@@ -1030,7 +1024,9 @@ RefreshSetup = function()
 	local idx = p == 1 and f.catalogIndex
 	setup.sends:SetText(idx and ("|cff999999Sends:|r " .. CATALOG[idx].text:gsub("%%q", "[your tracked quest]")) or "")
 
-	if not setup.captured then
+	if setup.capturing then
+		setup.hint:SetText("Waiting for a button...   Esc / B: cancel")
+	elseif not setup.captured then
 		setup.hint:SetText("Use the cursor to choose")
 	elseif GamePadOn() then
 		setup.hint:SetText("D-pad: move   A: choose   B: back")
@@ -1043,6 +1039,7 @@ local function SetupMove(dx, dy)
 	if setup.noteEdit:HasFocus() then setup.noteEdit:ClearFocus() end -- D-pad leaves the text field
 	local page = setup.pages[setup.page]
 	local idx = setup.focus[setup.page] + dx + dy * page.cols
+	if dy > 0 and idx > #page.items then idx = #page.items end -- last row may be shorter
 	if idx >= 1 and idx <= #page.items then
 		setup.focus[setup.page] = idx
 		RefreshSetup()
@@ -1089,7 +1086,83 @@ local function SetupFinish()
 		panel:Hide()
 	end
 	Layout()
-	Print("Setup done. Bind \"Quick chat menu\" under Options > Keybindings > AddOns > DeckTalk. Change texts any time with /dt config.")
+	local key = KeyText("DECKTALK_MENU")
+	if key ~= "" then
+		Print("All set! Press " .. key .. " to open Quick chat. Change anything later with /dt setup.")
+	else
+		Print("All set! Quick chat has no button yet - give it one with /dt setup.")
+	end
+end
+
+-- Step 3: "press the button you want" - binds the Quick chat menu without a trip
+-- to the keybinding screen.
+local BIND_ACTION = "DECKTALK_MENU"
+local MODIFIER_KEYS = { LSHIFT = 1, RSHIFT = 1, LCTRL = 1, RCTRL = 1, LALT = 1, RALT = 1, LMETA = 1, RMETA = 1, UNKNOWN = 1 }
+
+local function StopCapture(msg)
+	if not setup or not setup.capturing then return end
+	setup.capturing, setup.bindConfirm = false, nil
+	if setup.captureTimer then setup.captureTimer:Cancel() setup.captureTimer = nil end
+	setup.capture:Hide()
+	if msg then setup.bindMsg:SetText(msg) end
+	if setup:IsShown() then CaptureKeys(setup, SETUP_KEYS) end
+	RefreshSetup()
+end
+
+local function ApplyBind(combo)
+	if InCombatLockdown() then
+		StopCapture("|cffff5555Buttons can't be changed in combat.|r Try again afterwards.")
+		return
+	end
+	pcall(function()
+		for _, old in ipairs({ GetBindingKey(BIND_ACTION) }) do SetBinding(old) end
+		SetBinding(combo, BIND_ACTION)
+		if SaveBindings and GetCurrentBindingSet then SaveBindings(GetCurrentBindingSet()) end
+	end)
+	if GetBindingKey(BIND_ACTION) then
+		setup.focus[3] = #setup.pages[3].items -- move on to Finish
+		StopCapture("|cff33ff33Done!|r Press " .. KeyText(BIND_ACTION) .. " any time to open Quick chat.")
+		Layout()
+	else
+		StopCapture("|cffff5555That one didn't work.|r Try another button.")
+	end
+end
+
+local function OnCaptured(key)
+	if not setup.capturing or MODIFIER_KEYS[key] then return end
+	local combo = (IsAltKeyDown() and "ALT-" or "") .. (IsControlKeyDown() and "CTRL-" or "")
+		.. (IsShiftKeyDown() and "SHIFT-" or "") .. key
+	if combo == "ESCAPE" or combo == "PAD2" then StopCapture("Cancelled.") return end
+	if SETUP_KEYS[combo] then
+		setup.bindMsg:SetText("|cffff9933That button moves around in DeckTalk's menus.|r Press another one.")
+		return
+	end
+	local action = GetBindingAction and GetBindingAction(combo) or ""
+	if action ~= "" and action ~= BIND_ACTION and setup.bindConfirm ~= combo then
+		setup.bindConfirm = combo
+		local name = (GetBindingName and GetBindingName(action)) or action
+		setup.bindMsg:SetText("|cffff9933" .. (GetBindingText(combo, true) or combo) .. " is used for \"" .. name
+			.. "\".|r Press it again to use it anyway, or press another button.")
+		return
+	end
+	ApplyBind(combo)
+end
+
+local function StartCapture()
+	if InCombatLockdown() then
+		setup.bindMsg:SetText("|cffff5555Buttons can't be changed in combat.|r Try again afterwards.")
+		return
+	end
+	ReleaseKeys(setup) -- so every button reaches the capture frame
+	setup.capturing, setup.bindConfirm = true, nil
+	setup.bindMsg:SetText("|cffffcc00Press the button or combo you want now...|r")
+	setup.capture:Show()
+	if setup.captureTimer then setup.captureTimer:Cancel() end
+	setup.captureTimer = C_Timer.NewTimer(10, function()
+		setup.captureTimer = nil
+		StopCapture("No button pressed. Choose again when you're ready.")
+	end)
+	RefreshSetup()
 end
 
 local function CreateSetup()
@@ -1145,9 +1218,7 @@ local function CreateSetup()
 	setup.sends = Label(p1, "", 24, -256, "GameFontHighlightSmall")
 	setup.sends:SetWidth(SETUP_W - 48)
 	setup.sends:SetWordWrap(false)
-	setup.skipBtn = BottomButton(p1, "Skip", 1, function() setup:Hide() end)
 	setup.nextBtn = BottomButton(p1, "Next", 0, function() SetupPage(2) end)
-	tinsert(p1.items, setup.skipBtn)
 	tinsert(p1.items, setup.nextBtn)
 
 	-- page 2: note + panel ---------------------------------------------------
@@ -1183,10 +1254,39 @@ local function CreateSetup()
 	Check("intro", -164, "Post the note in group chat when I join a group", "autoIntro")
 	Check("reply", -190, "Whisper the note back to people who whisper me", "autoReply")
 	Check("panel", -216, "Keep the small button panel on screen", "showPanel")
-	setup.backBtn = BottomButton(p2, "Back", 1, function() SetupPage(1) end)
-	setup.finishBtn = BottomButton(p2, "Finish", 0, SetupFinish)
-	tinsert(p2.items, setup.backBtn)
-	tinsert(p2.items, setup.finishBtn)
+	tinsert(p2.items, BottomButton(p2, "Back", 1, function() SetupPage(1) end))
+	tinsert(p2.items, BottomButton(p2, "Next", 0, function() SetupPage(3) end))
+
+	-- page 3: one button for Quick chat ---------------------------------------
+	local p3 = Page(1)
+	Label(p3, "One button for everything", 22, -34, "GameFontNormalLarge")
+	local intro = Label(p3, "Quick chat is a menu you steer with the D-pad: choose a message, press A, sent. "
+		.. "Give it a button you can reach while playing.", 22, -56, "GameFontHighlightSmall")
+	intro:SetWidth(SETUP_W - 44)
+	setup.bindStatus = Label(p3, "", 24, -102, "GameFontNormalLarge")
+	setup.chooseBtn = MakeButton(p3, 170, 28, 24, -130, "Choose button", StartCapture)
+	tinsert(p3.items, setup.chooseBtn)
+	setup.bindMsg = Label(p3, "", 24, -170, "GameFontHighlightSmall")
+	setup.bindMsg:SetWidth(SETUP_W - 48)
+	local tip = Label(p3, "Steam Deck tip: in Steam's controller settings, give a back grip button (L4 / R4) "
+		.. "a key such as F7 first. Then choose it here.", 24, -222, "GameFontDisableSmall")
+	tip:SetWidth(SETUP_W - 48)
+	tinsert(p3.items, BottomButton(p3, "Back", 1, function() SetupPage(2) end))
+	setup.finishBtn = BottomButton(p3, "Finish", 0, SetupFinish)
+	tinsert(p3.items, setup.finishBtn)
+
+	-- swallows the next key / gamepad button while "Choose button" is waiting
+	local cap = CreateFrame("Frame", nil, setup)
+	cap:SetAllPoints()
+	cap:SetFrameLevel((setup:GetFrameLevel() or 0) + 30)
+	cap:EnableMouse(true)
+	cap:EnableKeyboard(true)
+	if cap.SetPropagateKeyboardInput then cap:SetPropagateKeyboardInput(false) end
+	if cap.EnableGamePadButton then cap:EnableGamePadButton(true) end
+	cap:SetScript("OnKeyDown", function(_, key) OnCaptured(key) end)
+	cap:SetScript("OnGamePadButtonDown", function(_, key) OnCaptured(key) end)
+	cap:Hide()
+	setup.capture = cap
 
 	-- focus marker sits above the buttons it highlights
 	local overlay = CreateFrame("Frame", nil, setup)
@@ -1208,12 +1308,15 @@ local function CreateSetup()
 			page.items[setup.focus[setup.page]]:Click()
 		end,
 		Back = function()
-			if setup.page == 2 then SetupPage(1) else setup:Hide() end
+			if setup.page > 1 then SetupPage(setup.page - 1) else setup:Hide() end
 		end,
 	})
 
 	setup:SetScript("OnHide", function()
 		setup.noteEdit:ClearFocus()
+		setup.capturing, setup.bindConfirm = false, nil
+		if setup.captureTimer then setup.captureTimer:Cancel() setup.captureTimer = nil end
+		setup.capture:Hide()
 		ReleaseKeys(setup)
 		if not DB.setupDone then
 			DB.setupDone = true
@@ -1245,7 +1348,9 @@ function OpenSetup()
 	setup.showPanel = DB.shown and true or false
 	setup.page = 1
 	setup.focus[1] = #setup.pages[1].items -- Next
-	setup.focus[2] = #setup.pages[2].items -- Finish
+	setup.focus[2] = #setup.pages[2].items -- Next
+	setup.focus[3] = GetBindingKey("DECKTALK_MENU") and #setup.pages[3].items or 1 -- Finish, or Choose button
+	setup.bindMsg:SetText("")
 	setup:Show()
 	CaptureKeys(setup, SETUP_KEYS)
 	RefreshSetup()
@@ -1283,7 +1388,9 @@ end
 local function OnWhisper(text, sender, _, _, _, flags, _, _, _, _, _, guid)
 	if not sender or sender == "" then return end
 	lastWhisperer = sender
+	lastWhisperAt = GetTime()
 	UpdateTitle()
+	C_Timer.After(WHISPER_WINDOW + 0.5, UpdateTitle)
 	if not DB.autoReply then return end
 	if flags == "GM" then return end
 	if InCombatLockdown() and IsInInstance() then return end -- chat is restricted there
@@ -1332,6 +1439,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
 
 	elseif event == "PLAYER_REGEN_DISABLED" then
 		-- fires just before combat lockdown: hand the D-pad / Enter / Esc back to the game
+		StopCapture("|cffff5555Combat started.|r Choose the button again afterwards.")
 		ReleaseKeys(menu)
 		ReleaseKeys(setup)
 		RefreshMenu()
@@ -1367,9 +1475,7 @@ BINDING_NAME_DECKTALK_MENU = "Quick chat menu (press again: next)"
 BINDING_NAME_DECKTALK_MENU_SEND = "Quick chat: send selected"
 BINDING_NAME_DECKTALK_TOGGLE = "Show / hide panel"
 BINDING_NAME_DECKTALK_LFG = "LFG for tracked quest"
-BINDING_NAME_DECKTALK_NOTE = "Send Steam Deck note"
-BINDING_NAME_DECKTALK_REPLY = "Whisper note to last whisperer"
-BINDING_NAME_DECKTALK_DEST = "Cycle destination (Auto/Say/Group/Whisper)"
+BINDING_NAME_DECKTALK_NOTE = "Send my note"
 for i = 1, NUM_PHRASES do
 	_G["BINDING_NAME_DECKTALK_PHRASE" .. i] = "Quick phrase " .. i
 end
@@ -1384,11 +1490,6 @@ SlashCmdList.DECKTALK = function(msg)
 		OpenEditor()
 	elseif cmd == "setup" then
 		OpenSetup()
-	elseif cmd == "hide" then
-		DB.shown = false
-		panel:Hide()
-	elseif cmd == "show" then
-		ShowPanel()
 	elseif cmd == "scale" and tonumber(rest) then
 		DB.scale = math.max(0.5, math.min(2, tonumber(rest)))
 		panel:SetScale(DB.scale)
@@ -1398,6 +1499,6 @@ SlashCmdList.DECKTALK = function(msg)
 		panel:ClearAllPoints()
 		panel:SetPoint("LEFT", UIParent, "LEFT", 16, 80)
 	else
-		Print("/dt - show/hide panel | /dt config | /dt setup | /dt scale 0.9 | /dt reset")
+		Print("/dt - show/hide panel | /dt setup | /dt config - edit texts | /dt scale 0.9 | /dt reset")
 	end
 end

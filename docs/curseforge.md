@@ -37,11 +37,11 @@ DeckTalk puts the things you say all the time one button press away. Open the **
   - **Left/Right** changes where the message goes.
   - The bottom line shows exactly what will be sent.
   - No cursor needed, so it works with WoW: Forever's native Gamepad mode, ConsolePort or Steam Input keyboard mappings. Arrow keys, Enter and Esc work too.
-- **Guided setup on first login.** Pick up to 6 of 12 standard messages, write your auto-reply note (start from a Steam Deck, controller or handheld text and edit it freely) and decide whether the panel stays on screen. Press A twice to accept the defaults.
+- **Guided setup on first login, in three steps.** Pick up to 6 of 12 standard messages, write your auto-reply note (start from a Steam Deck, controller or handheld text and edit it freely) and decide whether the panel stays on screen. The last step binds Quick chat: press **Choose button**, then the button or combo you want. No trip to the keybinding screen.
 - **Up to 6 quick phrases**, for example *Hi!, Thanks!, Yes, No, Inv please?, Group up?* All of them are editable.
 - **Small panel for small screens.** Two compact columns that only take the space your phrases need. Minimize it to a bar, or close it and use the Quick chat menu instead.
 - **Choose where messages go**:
-  - **Auto**: group chat when you're grouped, /say when you're solo
+  - **Auto**: group chat when you're grouped. Alone, it answers a whisper from the last 2 minutes, otherwise /say
   - **Say** or **Group**
   - **Whisper**: replies to whoever whispered you last
 
@@ -51,7 +51,7 @@ DeckTalk puts the things you say all the time one button press away. Open the **
   The role comes from your current spec, or you can set Tank / Healer / DPS yourself. With no quest tracked, it posts your zone instead.
 - **Your Steam Deck note**: *"I'm playing on a Steam Deck and typing is slow - sorry if I don't reply much!"*
   - Optionally posted in group chat when you join a group. It skips NPC-only groups and waits until combat ends.
-  - Optionally whispered back to people who whisper you. It skips friends, guild members and GMs, and replies at most once per player every 10 minutes.
+  - Optionally whispered back to people who whisper you. It only answers strangers (not friends, guild members or GMs), at most once per player every 10 minutes.
 - **Built for back buttons.** Everything can be keybound, and every button shows its key, so the panel doubles as a cheat sheet.
 - **Double-tap safe.** A short cooldown prevents accidental double posts and channel spam. Buttons flash **Sent!** when a message goes out.
 - **Easy to get back.** If you closed the panel, the Quick chat menu has a "Show panel" entry, so you never have to type a command. Where the addon compartment is available (the minimap addon menu), left-click shows the panel and right-click opens settings.
@@ -64,12 +64,12 @@ DeckTalk uses WoW's own keybindings, so it works with whatever controller setup 
 
 **WoW: Forever, built-in Gamepad mode**
 1. Turn on **Options → Gamepad (Alpha)**.
-2. Open **Keybindings → AddOns → DeckTalk** and bind **Quick chat menu** to a button or button combo.
+2. In DeckTalk's setup (step 3), press **Choose button** and then a button or button combo.
 3. Press it, then use the D-pad to choose, **A** to send and **B** to close.
 
 **Steam Deck back buttons (Forever and retail)**
 1. In Steam → **Controller settings**, map **L4** to `F7` and **R4** to `F8`.
-2. In WoW keybindings, set **Quick chat menu** = `F7` and **Quick chat: send selected** = `F8`.
+2. In DeckTalk's setup, choose `F7` as the Quick chat button. In WoW keybindings (AddOns → DeckTalk), set **Quick chat: send selected** = `F8`.
 3. Press L4 to open the menu (press it again for the next entry) and R4 to send. That's every message on two buttons. L5/R5 are free for LFG or your note.
 
 **Retail:** Retail only has a basic built-in gamepad mode. Use the back-button setup above, or ConsolePort. DeckTalk works with the ConsolePort cursor.
@@ -84,9 +84,7 @@ Use these in any phrase, your note or the LFG message. The settings window shows
 |---|---|
 | `%q` | your tracked quest (as a clickable link) |
 | `%t` | your target's name |
-| `%z` | your current zone |
 | `%w` | role + level + class, e.g. *Healer, lvl 18 Druid* |
-| `%r` / `%l` / `%c` | role / level / class on their own |
 
 ## Commands
 
