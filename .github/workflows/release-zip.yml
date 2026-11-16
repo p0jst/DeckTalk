@@ -1,0 +1,27 @@
+# When a release is published on GitHub, build the install zip and attach it.
+# The same zip is the one to upload to CurseForge.
+name: Build release zip
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and attach DeckTalk zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^## Version: ${version}\s*$" DeckTalk.toc; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match the Version line in DeckTalk.toc"
+            exit 1
+          fi
+          mkdir -p out/DeckTalk/media
+          cp DeckTalk.toc DeckTalk.lua Bindings.xml LICENSE README.md CHANGELOG.md out/DeckTalk/
+          cp media/icon.tga out/DeckTalk/media/
+          (cd out && zip -r "DeckTalk-${version}.zip" DeckTalk)
+          gh release upload "${GITHUB_REF_NAME}" "out/DeckTalk-${version}.zip" --clobber
