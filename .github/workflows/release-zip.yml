@@ -1,27 +1,81 @@
-# When a release is published on GitHub, build the install zip and attach it.
-# The same zip is the one to upload to CurseForge.
-name: Build release zip
+# When a release is published on GitHub:
+#   1. build the install zip and attach it to the release
+#   2. upload the same zip to CurseForge (only if the CF_API_KEY secret exists)
+# A release marked "pre-release" on GitHub becomes a Beta file on CurseForge.
+name: Release
 on:
   release:
     types: [published]
 permissions:
   contents: write
+env:
+  CF_PROJECT_ID: "1796525"
 jobs:
-  zip:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build and attach DeckTalk zip
-        env:
-          GH_TOKEN: ${{ github.token }}
+
+      - name: Check version
         run: |
           version="${GITHUB_REF_NAME#v}"
           if ! grep -q "^## Version: ${version}\s*$" DeckTalk.toc; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match the Version line in DeckTalk.toc"
             exit 1
           fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Build zip and attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           mkdir -p out/DeckTalk/media
           cp DeckTalk.toc DeckTalk.lua Bindings.xml LICENSE README.md CHANGELOG.md out/DeckTalk/
           cp media/icon.tga out/DeckTalk/media/
-          (cd out && zip -r "DeckTalk-${version}.zip" DeckTalk)
-          gh release upload "${GITHUB_REF_NAME}" "out/DeckTalk-${version}.zip" --clobber
+          (cd out && zip -r "DeckTalk-${VERSION}.zip" DeckTalk)
+          gh release upload "${GITHUB_REF_NAME}" "out/DeckTalk-${VERSION}.zip" --clobber
+
+      - name: Upload to CurseForge
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          RELEASE_NOTES: ${{ github.event.release.body }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          if [ -z "$CF_API_KEY" ]; then
+            echo "::warning::CF_API_KEY secret not set - upload the zip to CurseForge by hand."
+            exit 0
+          fi
+          api="https://wow.curseforge.com/api"
+
+          # Interface numbers in the .toc -> CurseForge game version names
+          # 16001 -> 1.60.1 (WoW: Forever), 120105 -> 12.1.5 (retail)
+          names=$(grep '^## Interface:' DeckTalk.toc | cut -d: -f2 | tr ',' '\n' | tr -d ' \r' \
+            | awk 'NF { printf "%d.%d.%d\n", int($1/10000), int($1/100)%100, $1%100 }')
+          echo "Game versions from the .toc:"; echo "$names"
+
+          curl -sSf -H "X-Api-Token: $CF_API_KEY" "$api/game/versions" -o versions.json
+          ids=$(jq -c --arg names "$names" \
+            '[ .[] | select(.name as $n | ($names | split("\n") | index($n))) | .id ]' versions.json)
+          echo "CurseForge version ids: $ids"
+          if [ "$ids" = "[]" ]; then
+            echo "::error::None of these game versions exist on CurseForge: $(echo $names). Upload by hand."
+            exit 1
+          fi
+          for n in $names; do
+            jq -e --arg n "$n" 'any(.[]; .name == $n)' versions.json > /dev/null \
+              || echo "::warning::Game version $n not found on CurseForge - not tagged."
+          done
+
+          if [ "$PRERELEASE" = "true" ]; then type="beta"; else type="release"; fi
+          jq -n --arg log "$RELEASE_NOTES" --arg name "DeckTalk ${VERSION}" --arg type "$type" \
+            --argjson ids "$ids" \
+            '{changelog: $log, changelogType: "markdown", displayName: $name, gameVersions: $ids, releaseType: $type}' \
+            > metadata.json
+          cat metadata.json
+
+          curl -sS --fail-with-body -H "X-Api-Token: $CF_API_KEY" \
+            -F "metadata=<metadata.json" \
+            -F "file=@out/DeckTalk-${VERSION}.zip" \
+            "$api/projects/${CF_PROJECT_ID}/upload-file"
+          echo
+          echo "Uploaded DeckTalk ${VERSION} to CurseForge as ${type}."
