@@ -37,13 +37,15 @@ DeckTalk puts the things you say all the time one button press away. Open the **
   - **Left/Right** changes where the message goes.
   - The bottom line shows exactly what will be sent.
   - No cursor needed, so it works with WoW: Forever's native Gamepad mode, ConsolePort or Steam Input keyboard mappings. Arrow keys, Enter and Esc work too.
-- **8 quick phrases**: *Hi!, Thanks!, Yes, No, One sec, Sorry!, Inv please?, Group up?* All of them are editable.
+- **Guided setup on first login.** Pick up to 6 of 12 standard messages, choose the note that fits you (Steam Deck, controller or handheld) and decide whether the panel stays on screen. Press A twice to accept the defaults.
+- **Up to 6 quick phrases**, for example *Hi!, Thanks!, Yes, No, Inv please?, Group up?* All of them are editable.
+- **Small panel for small screens.** Two compact columns that only take the space your phrases need. Minimize it to a bar, or close it and use the Quick chat menu instead.
 - **Choose where messages go**:
   - **Auto**: group chat when you're grouped, /say when you're solo
   - **Say** or **Group**
   - **Whisper**: replies to whoever whispered you last
 
-  The title bar always shows the current destination, so you never post in the wrong place.
+  The title bar button always shows the current destination, so you never post in the wrong place. Click it to change.
 - **One-tap LFG** posts your tracked quest as a clickable link, with your role, level and class:
   `LFG [The Defias Brotherhood] - Healer, lvl 18 Druid`
   The role comes from your current spec, or you can set Tank / Healer / DPS yourself. With no quest tracked, it posts your zone instead.
@@ -52,7 +54,7 @@ DeckTalk puts the things you say all the time one button press away. Open the **
   - Optionally whispered back to people who whisper you. It skips friends, guild members and GMs, and replies at most once per player every 10 minutes.
 - **Built for back buttons.** Everything can be keybound, and every button shows its key, so the panel doubles as a cheat sheet.
 - **Double-tap safe.** A short cooldown prevents accidental double posts and channel spam. Buttons flash **Sent!** when a message goes out.
-- **You can't lose it.** The panel minimizes to a small bar instead of closing. Where the addon compartment is available (the minimap addon menu), left-click shows the panel and right-click opens settings.
+- **Easy to get back.** If you closed the panel, the Quick chat menu has a "Show panel" entry, so you never have to type a command. Where the addon compartment is available (the minimap addon menu), left-click shows the panel and right-click opens settings.
 - **ConsolePort-friendly**: works with the ConsolePort cursor.
 - **Lightweight**: no libraries, no dependencies, no data collection.
 
@@ -90,10 +92,10 @@ Use these in any phrase, your note or the LFG message. The settings window shows
 
 | Command | What it does |
 |---|---|
-| `/dt` | Show / minimize the panel |
+| `/dt` | Show / hide the panel |
 | `/dt config` | Edit phrases and options |
-| `/dt hide` / `/dt show` | Hide completely / show again |
-| `/dt scale 1.2` | Resize the panel (0.5–2) |
+| `/dt setup` | Run the first-time setup again |
+| `/dt scale 0.9` | Resize the panel (0.5–2) |
 | `/dt reset` | Move the panel back to its default position |
 
 ## FAQ
@@ -133,6 +135,7 @@ Found a bug or have an idea? Open an issue on [GitHub](https://github.com/p0jst/
 
 CurseForge wants real in-game screenshots. These six show the addon best:
 
+1. **The setup window** from the first login.
 1. **The Quick chat menu** open in the world, with a phrase selected.
 2. **The panel**, expanded, with a couple of keybinds set so the key labels show.
 3. **An LFG post in chat** with the clickable quest link, e.g. in a starting zone.

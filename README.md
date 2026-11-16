@@ -13,13 +13,16 @@ plus a small panel and keybinds for the things you say all the time.
   - Left/Right changes where the message goes.
   - The bottom line shows exactly what will be sent.
   - No cursor needed, so it works in WoW: Forever's native Gamepad mode, with ConsolePort, or with Steam Input keyboard mappings.
-- **8 quick phrases**: "Hi!", "Thanks!", "Yes", "No", "Inv please?"… all editable.
-- **Pick where messages go**:
+- **First-run setup.** The first time you log in, DeckTalk asks which standard messages you want
+  (pick up to 6 of 12), which note fits you (Steam Deck, controller or handheld) and whether you want
+  the panel on screen. Press A twice to accept the defaults. Run it again with `/dt setup`.
+- **Up to 6 quick phrases**: "Hi!", "Thanks!", "Yes", "No", "Inv please?"… all editable.
+- **Small panel for small screens.** Two compact columns that only take the space your phrases need.
+  Minimize it to a bar with **-**, or close it with **X** and use the Quick chat menu instead.
+- **Pick where messages go** with the button in the title bar (click to change):
   - `Auto`: group chat when grouped, otherwise /say
   - `Say` or `Group`
   - `Whisper`: the last person who whispered you
-
-  The title bar always shows the current destination.
 - **LFG: quest** posts your tracked quest with your role, level and class in LookingForGroup
   (or General): `LFG [The Defias Brotherhood] - Healer, lvl 18 Druid`.
   The role comes from your spec, or you can set it yourself. With no tracked quest it posts your zone instead.
@@ -29,7 +32,8 @@ plus a small panel and keybinds for the things you say all the time.
     skipping friends and guild members
 - **Made for back buttons.** Every action can be keybound, and the panel shows each button's key.
 - **Double-tap safe.** A short cooldown stops accidental double sends and channel spam.
-- **Minimize instead of close**, so you're never stuck typing `/dt` to get it back.
+- **Easy to get back.** If you closed the panel, the Quick chat menu has a "Show panel" entry,
+  so you never have to type `/dt`.
 
 ## Controller setup
 
@@ -67,10 +71,10 @@ Use these in any phrase, the note or the LFG message:
 ## Commands
 | Command | Does |
 |---|---|
-| `/dt` | Show / minimize the panel |
+| `/dt` | Show / hide the panel |
 | `/dt config` | Edit phrases and options (Steam keyboard: `Steam + X`) |
-| `/dt hide` / `/dt show` | Hide completely / show again |
-| `/dt scale 1.2` | Resize the panel (0.5–2) |
+| `/dt setup` | Run the first-time setup again |
+| `/dt scale 0.9` | Resize the panel (0.5–2) |
 | `/dt reset` | Move the panel back to its default position |
 
 ## Install

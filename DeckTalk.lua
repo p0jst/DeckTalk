@@ -5,15 +5,13 @@ local ADDON = ...
 ---------------------------------------------------------------------------
 -- Defaults
 ---------------------------------------------------------------------------
-local NUM_PHRASES = 8
+local NUM_PHRASES = 6
 local DEFAULTS = {
 	phrases = {
 		{ label = "Hi!",         text = "Hi!" },
 		{ label = "Thanks!",     text = "Thanks!" },
 		{ label = "Yes",         text = "Yes" },
 		{ label = "No",          text = "No" },
-		{ label = "One sec",     text = "One sec please." },
-		{ label = "Sorry!",      text = "Sorry!" },
 		{ label = "Inv please?", text = "Could you invite me, please?" },
 		{ label = "Group up?",   text = "Want to group up for %q?" },
 	},
@@ -28,6 +26,28 @@ local DEFAULTS = {
 	shown          = true,
 	collapsed      = false,
 	scale          = 1,
+}
+
+-- Standard texts offered by the first-run setup (pick up to NUM_PHRASES)
+local CATALOG = {
+	{ label = "Hi!",          text = "Hi!" },
+	{ label = "Thanks!",      text = "Thanks!" },
+	{ label = "Yes",          text = "Yes" },
+	{ label = "No",           text = "No" },
+	{ label = "Inv please?",  text = "Could you invite me, please?" },
+	{ label = "Group up?",    text = "Want to group up for %q?" },
+	{ label = "One sec",      text = "One sec please." },
+	{ label = "Sorry!",       text = "Sorry!" },
+	{ label = "Ready",        text = "Ready!" },
+	{ label = "On my way",    text = "On my way!" },
+	{ label = "BRB",          text = "BRB, back in a minute." },
+	{ label = "Thanks, bye!", text = "Thanks for the group, bye!" },
+}
+
+local NOTES = {
+	{ label = "Steam Deck", text = "I'm playing on a Steam Deck and typing is slow - sorry if I don't reply much!" },
+	{ label = "Controller", text = "I'm playing with a controller and typing is slow - sorry if I don't reply much!" },
+	{ label = "Handheld",   text = "I'm playing on a handheld and typing is slow - sorry if I don't reply much!" },
 }
 
 local ROLE_TEXT  = { TANK = "Tank", HEALER = "Healer", DAMAGER = "DPS" }
@@ -63,6 +83,20 @@ local function CopyDefaults(src, dst)
 		end
 	end
 	return dst
+end
+
+-- Older versions stored 8 phrases: keep the first NUM_PHRASES that have text.
+local function NormalizePhrases(db)
+	if type(db.phrases) ~= "table" then return end
+	local keep = {}
+	for i = 1, #db.phrases do
+		local p = db.phrases[i]
+		if type(p) == "table" and type(p.text) == "string" and p.text ~= "" and #keep < NUM_PHRASES then
+			tinsert(keep, { label = type(p.label) == "string" and p.label or "", text = p.text })
+		end
+	end
+	for i = #keep + 1, NUM_PHRASES do keep[i] = { label = "", text = "" } end
+	db.phrases = keep
 end
 
 local SendChat = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
@@ -195,10 +229,11 @@ end
 ---------------------------------------------------------------------------
 -- Panel (forward declarations used by actions)
 ---------------------------------------------------------------------------
-local panel, titleText
-local phraseButtons, destButtons = {}, {}
+local panel
+local phraseButtons = {}
 local lfgButton, noteButton
-local OpenEditor, UpdateTitle
+local OpenEditor, OpenSetup, UpdateTitle
+local setup -- first-run setup window, created on demand
 
 local function Flash(btn)
 	if not btn or not btn.baseText then return end
@@ -252,15 +287,6 @@ end
 
 local function SetDest(d)
 	DB.dest = d
-	for _, b in ipairs(destButtons) do
-		if b.dest == d then
-			b:LockHighlight()
-			b:SetText("|cffffffff" .. DEST_TEXT[b.dest] .. "|r")
-		else
-			b:UnlockHighlight()
-			b:SetText("|cff999999" .. DEST_TEXT[b.dest] .. "|r")
-		end
-	end
 	UpdateTitle()
 end
 
@@ -272,18 +298,20 @@ function DeckTalk_CycleDest()
 end
 
 ---------------------------------------------------------------------------
--- Main panel
+-- Main panel: compact, 2 columns, only as tall as the phrases you use
 ---------------------------------------------------------------------------
-local PAD, BTN_W, BTN_H, DEST_H, TITLE_H = 6, 150, 32, 22, 26
-local CONTENT_W = BTN_W * 2 + PAD
-local FRAME_W = CONTENT_W + PAD * 2
-local PHRASE_TOP = TITLE_H + DEST_H + PAD * 2
-local FRAME_H = PHRASE_TOP + (NUM_PHRASES / 2 + 1) * (BTN_H + PAD) + PAD
+local PAD, GAP, BTN_W, BTN_H, TITLE_H = 5, 4, 112, 24, 24
+local FRAME_W = PAD * 2 + BTN_W * 2 + GAP
 
 local function KeyText(action)
 	local key = GetBindingKey(action)
 	if not key then return "" end
 	return GetBindingText(key, true) or key
+end
+
+local function ShortName(target)
+	local ok, short = pcall(Ambiguate, target, "short")
+	return tostring(ok and short or target)
 end
 
 -- "Party", "Whisper Bob", or a red warning when the destination can't be used
@@ -292,41 +320,82 @@ local function DestLabel()
 	if not chatType then
 		return "|cffff5555" .. (DB.dest == "WHISPER" and "no whisper yet" or "not in a group") .. "|r"
 	elseif chatType == "WHISPER" then
-		local ok, short = pcall(Ambiguate, target, "short")
-		return "|cffff80ffWhisper " .. tostring(ok and short or target) .. "|r"
+		return "|cffff80ffWhisper " .. ShortName(target) .. "|r"
 	end
 	return CHAT_TEXT[chatType] or chatType
+end
+
+-- Short form for the title-bar button: "Auto (Say)", "To: Party", "To: Bob"
+local function DestShort()
+	local chatType, target = ResolveDest()
+	if not chatType then
+		return "|cffff5555" .. (DB.dest == "WHISPER" and "No whisper" or "No group") .. "|r"
+	end
+	local name = chatType == "WHISPER" and ("|cffff80ff" .. ShortName(target) .. "|r") or (CHAT_TEXT[chatType] or chatType)
+	if DB.dest == "AUTO" then return "Auto (" .. name .. ")" end
+	return "To: " .. name
 end
 
 local RefreshMenu -- quick chat menu, defined below
 
 function UpdateTitle()
-	if titleText then titleText:SetText("DeckTalk  |cff999999to|r " .. DestLabel()) end
+	if panel and panel.destBtn then panel.destBtn:SetText(DestShort()) end
 	if RefreshMenu then RefreshMenu() end
-end
-
-local function UpdateButtons()
-	if not panel then return end
-	for i = 1, NUM_PHRASES do
-		local b, p = phraseButtons[i], DB.phrases[i]
-		b.baseText = (p and p.label ~= "") and p.label or ("Phrase " .. i)
-		if not b.flashTimer then b:SetText(b.baseText) end
-		b.key:SetText(KeyText("DECKTALK_PHRASE" .. i))
-	end
-	lfgButton.key:SetText(KeyText("DECKTALK_LFG"))
-	noteButton.key:SetText(KeyText("DECKTALK_NOTE"))
 end
 
 local function SavePosition()
 	DB.pos = { panel:GetLeft(), panel:GetTop() }
 end
 
-local function ApplyCollapsed()
+local function Place(b, slot)
+	local col, row = (slot - 1) % 2, math.floor((slot - 1) / 2)
+	b:ClearAllPoints()
+	b:SetPoint("TOPLEFT", panel, "TOPLEFT", PAD + col * (BTN_W + GAP), -(TITLE_H + PAD + row * (BTN_H + GAP)))
+end
+
+-- Positions the buttons, hides unused phrase slots and sizes the panel to fit.
+local function Layout()
+	if not panel then return end
 	local c = DB.collapsed
-	for _, child in ipairs(panel.content) do child:SetShown(not c) end
+	local n = 0
+	for i = 1, NUM_PHRASES do
+		local b, p = phraseButtons[i], DB.phrases[i]
+		local has = p ~= nil and p.text ~= nil and p.text ~= ""
+		if has then
+			n = n + 1
+			b.baseText = (p.label and p.label ~= "") and p.label or p.text
+			if not b.flashTimer then b:SetText(b.baseText) end
+			b.key:SetText(KeyText("DECKTALK_PHRASE" .. i))
+			Place(b, n)
+		end
+		b:SetShown(has and not c)
+	end
+	local rows = math.ceil(n / 2)
+	Place(lfgButton, rows * 2 + 1)
+	Place(noteButton, rows * 2 + 2)
+	lfgButton:SetShown(not c)
+	noteButton:SetShown(not c)
+	lfgButton.key:SetText(KeyText("DECKTALK_LFG"))
+	noteButton.key:SetText(KeyText("DECKTALK_NOTE"))
 	if panel.Inset then panel.Inset:SetShown(not c) end
-	panel:SetHeight(c and TITLE_H + 2 or FRAME_H)
+	local fullH = TITLE_H + PAD + (rows + 1) * (BTN_H + GAP) - GAP + PAD + 1
+	panel:SetHeight(c and TITLE_H + 2 or fullH)
 	panel.minBtn:SetText(c and "+" or "-")
+end
+
+local function ShowPanel()
+	DB.shown, DB.collapsed = true, false
+	panel:Show()
+	Layout()
+end
+
+local function ClosePanel()
+	DB.shown = false
+	panel:Hide()
+	if not DB.closeHint then
+		DB.closeHint = true
+		Print("Panel closed. Get it back with /dt, the \"Show / hide panel\" keybind, or \"Show panel\" in the Quick chat menu.")
+	end
 end
 
 local function AddTooltip(b, fn)
@@ -347,21 +416,30 @@ local function MakeButton(parent, w, h, x, y, text, onClick)
 	return b
 end
 
-local function MakeActionButton(col, row, onClick)
-	local b = MakeButton(panel, BTN_W, BTN_H,
-		PAD + col * (BTN_W + PAD), -PHRASE_TOP - row * (BTN_H + PAD), "", onClick)
+local function FitText(b, w)
 	local fs = b:GetFontString()
-	if fs then fs:SetWidth(BTN_W - 30) fs:SetWordWrap(false) end -- long labels get "..."
+	if fs then fs:SetWidth(w) fs:SetWordWrap(false) end -- long labels get "..."
+end
+
+local function MakeActionButton(onClick)
+	local b = MakeButton(panel, BTN_W, BTN_H, 0, 0, "", onClick)
+	FitText(b, BTN_W - 26)
 	b.key = b:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	b.key:SetPoint("TOPRIGHT", -5, -4)
-	tinsert(panel.content, b)
+	b.key:SetPoint("TOPRIGHT", -4, -3)
 	return b
 end
 
+local DEST_HELP = {
+	AUTO = "Auto: group chat when you're in a group, otherwise /say",
+	SAY = "Say: players nearby",
+	GROUP = "Group: party / raid / instance chat",
+	WHISPER = "Whisper: the last person who whispered you",
+}
+
 local function CreatePanel()
 	panel = CreateFrame("Frame", "DeckTalkPanel", UIParent, "BasicFrameTemplateWithInset")
-	panel.content = {}
-	panel:SetSize(FRAME_W, FRAME_H)
+	panel.phraseButtons = phraseButtons
+	panel:SetSize(FRAME_W, TITLE_H + 2)
 	panel:SetMovable(true)
 	panel:EnableMouse(true)
 	panel:RegisterForDrag("LeftButton")
@@ -369,7 +447,6 @@ local function CreatePanel()
 	panel:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() SavePosition() end)
 	panel:SetClampedToScreen(true)
 	panel:SetScale(DB.scale or 1)
-	if panel.CloseButton then panel.CloseButton:Hide() end -- minimize instead of close
 
 	if DB.pos and type(DB.pos[1]) == "number" then
 		panel:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", DB.pos[1], DB.pos[2])
@@ -377,78 +454,68 @@ local function CreatePanel()
 		panel:SetPoint("LEFT", UIParent, "LEFT", 16, 80)
 	end
 
-	titleText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	titleText:SetPoint("TOPLEFT", 10, -6)
-	titleText:SetWidth(FRAME_W - 86) -- leave room for Edit / minimize buttons
-	titleText:SetJustifyH("LEFT")
-	titleText:SetWordWrap(false)
+	-- title bar: [To: Say] ........ [Edit] [-] [X]
+	local closeW = 0
+	if panel.CloseButton then
+		panel.CloseButton:SetScript("OnClick", ClosePanel)
+		AddTooltip(panel.CloseButton, function() return "Close (get it back with /dt)" end)
+		closeW = 22
+	end
 
-	panel.minBtn = MakeButton(panel, 22, 18, 0, 0, "-", function()
+	panel.minBtn = MakeButton(panel, 18, 18, 0, 0, "-", function()
 		DB.collapsed = not DB.collapsed
-		ApplyCollapsed()
+		Layout()
 	end)
 	panel.minBtn:ClearAllPoints()
-	panel.minBtn:SetPoint("TOPRIGHT", -4, -3)
+	panel.minBtn:SetPoint("TOPRIGHT", -4 - closeW, -3)
 	AddTooltip(panel.minBtn, function() return DB.collapsed and "Expand" or "Minimize" end)
 
-	local edit = MakeButton(panel, 40, 18, 0, 0, "Edit", function() OpenEditor() end)
+	local edit = MakeButton(panel, 36, 18, 0, 0, "Edit", function() OpenEditor() end)
 	edit:ClearAllPoints()
 	edit:SetPoint("RIGHT", panel.minBtn, "LEFT", -2, 0)
 	AddTooltip(edit, function() return "Edit phrases and options" end)
 
-	-- destination selector
-	local dw = math.floor((CONTENT_W - 3 * 4) / 4)
-	for i, d in ipairs(DESTS) do
-		local b = MakeButton(panel, dw, DEST_H, PAD + (i - 1) * (dw + 4), -TITLE_H - PAD, DEST_TEXT[d],
-			function() SetDest(d) end)
-		b.dest = d
-		AddTooltip(b, function()
-			if d == "AUTO" then return "Group chat when in a group, otherwise /say" end
-			if d == "WHISPER" then return "Reply to the last person who whispered you" end
-			if d == "GROUP" then return "Party / raid / instance chat" end
-			return "/say to players nearby"
-		end)
-		destButtons[i] = b
-		tinsert(panel.content, b)
-	end
+	local destW = FRAME_W - 6 - (4 + closeW + 18 + 2 + 36 + 4)
+	panel.destBtn = MakeButton(panel, destW, 18, 6, -3, "", DeckTalk_CycleDest)
+	FitText(panel.destBtn, destW - 10)
+	-- the button covers most of the title bar, so it also works as the drag handle
+	panel.destBtn:RegisterForDrag("LeftButton")
+	panel.destBtn:SetScript("OnDragStart", function() panel:StartMoving() end)
+	panel.destBtn:SetScript("OnDragStop", function() panel:StopMovingOrSizing() SavePosition() end)
+	AddTooltip(panel.destBtn, function()
+		return "Where messages go\n" .. DEST_HELP[DB.dest] .. "\n|cff999999Click to change, drag to move the panel|r"
+	end)
 
 	for i = 1, NUM_PHRASES do
-		local b = MakeActionButton((i - 1) % 2, math.floor((i - 1) / 2), function() DeckTalk_Phrase(i) end)
+		local b = MakeActionButton(function() DeckTalk_Phrase(i) end)
 		AddTooltip(b, function() return Expand(DB.phrases[i].text) end)
 		phraseButtons[i] = b
 	end
 
-	local row = NUM_PHRASES / 2
-	lfgButton = MakeActionButton(0, row, DeckTalk_LFG)
+	lfgButton = MakeActionButton(DeckTalk_LFG)
 	lfgButton.baseText = "|cff00ff00LFG: quest|r"
 	lfgButton:SetText(lfgButton.baseText)
 	AddTooltip(lfgButton, function()
 		return Expand(DB.lfgFormat, GetZoneText()) .. "\n|cff999999Posted in LookingForGroup (or General)|r"
 	end)
 
-	noteButton = MakeActionButton(1, row, DeckTalk_Note)
+	noteButton = MakeActionButton(DeckTalk_Note)
 	noteButton.baseText = "|cffffcc00Deck note|r"
 	noteButton:SetText(noteButton.baseText)
 	AddTooltip(noteButton, function() return DB.note end)
 
-	SetDest(DB.dest)
-	UpdateButtons()
-	ApplyCollapsed()
+	UpdateTitle()
+	Layout()
 	panel:SetShown(DB.shown)
 end
 
+-- Keybind / "/dt": show or hide the panel
 function DeckTalk_Toggle()
 	if not panel then return end
-	if not panel:IsShown() then
-		DB.shown, DB.collapsed = true, false
-		panel:Show()
-	else
-		DB.collapsed = not DB.collapsed
-	end
-	ApplyCollapsed()
+	if panel:IsShown() then ClosePanel() else ShowPanel() end
 end
 
--- Addon compartment (retail minimap dropdown): left = toggle, right = settings
+-- Addon compartment (retail minimap dropdown): left = show/hide, right = settings
 function DeckTalk_OnCompartmentClick(_, button)
 	if button == "RightButton" then OpenEditor() else DeckTalk_Toggle() end
 end
@@ -456,7 +523,7 @@ end
 function DeckTalk_OnCompartmentEnter(_, frame)
 	GameTooltip:SetOwner(frame, "ANCHOR_LEFT")
 	GameTooltip:SetText("DeckTalk")
-	GameTooltip:AddLine("Left-click: show / minimize", 1, 1, 1)
+	GameTooltip:AddLine("Left-click: show / hide panel", 1, 1, 1)
 	GameTooltip:AddLine("Right-click: edit phrases", 1, 1, 1)
 	GameTooltip:Show()
 end
@@ -466,26 +533,45 @@ function DeckTalk_OnCompartmentLeave()
 end
 
 ---------------------------------------------------------------------------
--- Quick chat menu: one bind opens it, D-pad / arrows choose, A / Enter send.
--- Needs no cursor, so it works in WoW: Forever's native Gamepad mode, with
--- ConsolePort, and with Steam Input keyboard mappings alike.
+-- Borrowed keys: a window captures D-pad / arrows / Enter / Esc only while
+-- it is open. Released on close and just before combat (override bindings
+-- can't be changed during combat lockdown).
 ---------------------------------------------------------------------------
-local menu
-local menuItems, menuSel, menuIdle = {}, 1, nil
-local pendingUnbind = false
-local MENU_W, ROW_H, MENU_TOP, MENU_FOOT = 320, 30, 34, 58
-local MENU_ROWS = NUM_PHRASES + 2
-local MENU_IDLE = 12 -- seconds before the menu closes by itself
+local function CaptureKeys(frame, keys)
+	if frame.captured or InCombatLockdown() then return end
+	for key, button in pairs(keys) do
+		SetOverrideBindingClick(frame, true, key, button)
+	end
+	frame.captured = true
+end
 
--- Keys captured only while the menu is open (released again on close / before combat)
-local MENU_KEYS = {
-	PADDUP = "DeckTalkMenuUp",     UP = "DeckTalkMenuUp",
-	PADDDOWN = "DeckTalkMenuDown", DOWN = "DeckTalkMenuDown",
-	PAD1 = "DeckTalkMenuSend",     ENTER = "DeckTalkMenuSend",
-	PAD2 = "DeckTalkMenuClose",    ESCAPE = "DeckTalkMenuClose",
-	PADDLEFT = "DeckTalkMenuLeft", LEFT = "DeckTalkMenuLeft",
-	PADDRIGHT = "DeckTalkMenuRight", RIGHT = "DeckTalkMenuRight",
-}
+local function ReleaseKeys(frame)
+	if not frame or not frame.captured then return end
+	if InCombatLockdown() then frame.pendingRelease = true return end
+	ClearOverrideBindings(frame)
+	frame.captured = false
+	frame.pendingRelease = false
+end
+
+local function NavKeys(prefix)
+	return {
+		PADDUP = prefix .. "Up",       UP = prefix .. "Up",
+		PADDDOWN = prefix .. "Down",   DOWN = prefix .. "Down",
+		PADDLEFT = prefix .. "Left",   LEFT = prefix .. "Left",
+		PADDRIGHT = prefix .. "Right", RIGHT = prefix .. "Right",
+		PAD1 = prefix .. "OK",         ENTER = prefix .. "OK",
+		PAD2 = prefix .. "Back",       ESCAPE = prefix .. "Back",
+	}
+end
+
+-- invisible buttons the captured keys "click" (key presses count as hardware events)
+local function MakeNavButtons(parent, prefix, actions)
+	for name, fn in pairs(actions) do
+		local b = CreateFrame("Button", prefix .. name, parent)
+		b:SetSize(1, 1)
+		b:SetScript("OnClick", fn)
+	end
+end
 
 local function GamePadOn()
 	if C_GamePad and C_GamePad.IsEnabled then
@@ -495,6 +581,18 @@ local function GamePadOn()
 	return GetCVarBool and GetCVarBool("GamePadEnable") or false
 end
 
+---------------------------------------------------------------------------
+-- Quick chat menu: one bind opens it, D-pad / arrows choose, A / Enter send.
+-- Needs no cursor, so it works in WoW: Forever's native Gamepad mode, with
+-- ConsolePort, and with Steam Input keyboard mappings alike.
+---------------------------------------------------------------------------
+local menu
+local menuItems, menuSel, menuIdle = {}, 1, nil
+local MENU_W, ROW_H, MENU_TOP, MENU_FOOT = 320, 30, 34, 58
+local MENU_ROWS = NUM_PHRASES + 3
+local MENU_IDLE = 12 -- seconds before the menu closes by itself
+local MENU_KEYS = NavKeys("DeckTalkMenu")
+
 local function BuildMenuItems()
 	wipe(menuItems)
 	for i = 1, NUM_PHRASES do
@@ -503,14 +601,18 @@ local function BuildMenuItems()
 			tinsert(menuItems, {
 				label = (p.label ~= "" and p.label) or p.text,
 				run = function() return DeckTalk_Phrase(i) end,
-				preview = function() return Expand(p.text) end,
+				preview = function() return "|cff999999Sends:|r " .. Expand(p.text) end,
 			})
 		end
 	end
 	tinsert(menuItems, { label = "|cff00ff00LFG: quest|r", run = DeckTalk_LFG,
-		preview = function() return Expand(DB.lfgFormat, GetZoneText()) .. "  |cff999999(LFG channel)|r" end })
+		preview = function() return "|cff999999Sends:|r " .. Expand(DB.lfgFormat, GetZoneText()) .. "  |cff999999(LFG channel)|r" end })
 	tinsert(menuItems, { label = "|cffffcc00Deck note|r", run = DeckTalk_Note,
-		preview = function() return DB.note end })
+		preview = function() return "|cff999999Sends:|r " .. DB.note end })
+	if panel and not panel:IsShown() then
+		tinsert(menuItems, { label = "|cff999999Show panel|r", run = function() ShowPanel() return true end,
+			preview = function() return "Puts the button panel back on screen" end })
+	end
 	if menuSel > #menuItems then menuSel = 1 end
 end
 
@@ -542,25 +644,9 @@ RefreshMenu = function()
 	menu.sel:SetPoint("BOTTOMRIGHT", selRow, "BOTTOMRIGHT", 0, 0)
 	menu.title:SetText("Quick chat  |cff999999to|r " .. DestLabel())
 	local item = menuItems[menuSel]
-	menu.preview:SetText(item and ("|cff999999Sends:|r " .. item.preview()) or "")
+	menu.preview:SetText(item and item.preview() or "")
 	menu.hint:SetText(MenuHint())
 	menu:SetHeight(MENU_TOP + #menuItems * ROW_H + MENU_FOOT)
-end
-
-local function ReleaseKeys()
-	if not menu or not menu.captured then return end
-	if InCombatLockdown() then pendingUnbind = true return end
-	ClearOverrideBindings(menu)
-	menu.captured = false
-	pendingUnbind = false
-end
-
-local function CaptureKeys()
-	if menu.captured or InCombatLockdown() then return end
-	for key, button in pairs(MENU_KEYS) do
-		SetOverrideBindingClick(menu, true, key, button)
-	end
-	menu.captured = true
 end
 
 local function MenuIdle()
@@ -638,24 +724,18 @@ local function CreateMenu()
 	menu.hint:SetJustifyH("LEFT")
 	menu.hint:SetWordWrap(false)
 
-	-- invisible buttons the captured keys "click" (key presses count as hardware events)
-	local actions = {
-		DeckTalkMenuUp = function() MenuMove(-1) end,
-		DeckTalkMenuDown = function() MenuMove(1) end,
-		DeckTalkMenuSend = MenuSend,
-		DeckTalkMenuClose = function() menu:Hide() end,
-		DeckTalkMenuLeft = function() MenuDest(-1) end,
-		DeckTalkMenuRight = function() MenuDest(1) end,
-	}
-	for name, fn in pairs(actions) do
-		local b = CreateFrame("Button", name, menu)
-		b:SetSize(1, 1)
-		b:SetScript("OnClick", fn)
-	end
+	MakeNavButtons(menu, "DeckTalkMenu", {
+		Up = function() MenuMove(-1) end,
+		Down = function() MenuMove(1) end,
+		OK = MenuSend,
+		Back = function() menu:Hide() end,
+		Left = function() MenuDest(-1) end,
+		Right = function() MenuDest(1) end,
+	})
 
 	menu:SetScript("OnHide", function()
 		if menuIdle then menuIdle:Cancel() menuIdle = nil end
-		ReleaseKeys()
+		ReleaseKeys(menu)
 	end)
 
 	if ConsolePort and ConsolePort.AddInterfaceCursorFrame then
@@ -666,11 +746,12 @@ end
 -- Bind 1: open, or move to the next entry when already open
 function DeckTalk_QuickMenu()
 	if not DB then return end
+	if setup and setup:IsShown() then return end -- setup owns the D-pad right now
 	if not menu then CreateMenu() end
 	if menu:IsShown() then MenuMove(1) return end
 	BuildMenuItems()
 	menu:Show()
-	CaptureKeys()
+	CaptureKeys(menu, MENU_KEYS)
 	RefreshMenu()
 	MenuIdle()
 end
@@ -684,7 +765,7 @@ end
 -- Settings editor
 ---------------------------------------------------------------------------
 local editor
-local EDITOR_W, EDITOR_H = 520, 572
+local EDITOR_W, EDITOR_H = 520, 516
 
 local function MakeEdit(parent, w, x, y, maxLetters)
 	local e = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
@@ -766,33 +847,34 @@ local function CreateEditor()
 	t:SetText("DeckTalk settings")
 
 	Label(editor, "Button label", 22, -32)
-	Label(editor, "Message", 135, -32)
+	Label(editor, "Message  (leave empty to remove the button)", 135, -32)
 
 	local order = {}
 	editor.labels, editor.texts = {}, {}
+	local y = -46
 	for i = 1, NUM_PHRASES do
-		local y = -46 - (i - 1) * 28
 		editor.labels[i] = MakeEdit(editor, 100, 24, y, 16)
 		editor.texts[i]  = MakeEdit(editor, 360, 137, y)
 		tinsert(order, editor.labels[i])
 		tinsert(order, editor.texts[i])
+		y = y - 28
 	end
 
-	Label(editor, "Steam Deck note", 22, -276)
-	editor.note = MakeEdit(editor, 473, 24, -290)
-	Label(editor, "LFG message", 22, -318)
-	editor.lfg = MakeEdit(editor, 473, 24, -332)
+	Label(editor, "Steam Deck note", 22, y - 6)
+	editor.note = MakeEdit(editor, 473, 24, y - 20)
+	Label(editor, "LFG message", 22, y - 48)
+	editor.lfg = MakeEdit(editor, 473, 24, y - 62)
 	tinsert(order, editor.note)
 	tinsert(order, editor.lfg)
 
-	editor.preview = Label(editor, "", 22, -358, "GameFontHighlightSmall")
+	editor.preview = Label(editor, "", 22, y - 88, "GameFontHighlightSmall")
 	editor.preview:SetWidth(EDITOR_W - 44)
 	editor.preview:SetWordWrap(false)
 	editor.lfg:SetScript("OnTextChanged", UpdatePreview)
 
 	local help = Label(editor,
 		"Placeholders: %q tracked quest   %t target   %z zone\n" ..
-		"%w role + level + class   %r role   %l level   %c class", 22, -376, "GameFontDisableSmall")
+		"%w role + level + class   %r role   %l level   %c class", 22, y - 106, "GameFontDisableSmall")
 	help:SetWidth(EDITOR_W - 44)
 
 	-- Tab / Shift-Tab between fields
@@ -804,20 +886,20 @@ local function CreateEditor()
 		end)
 	end
 
-	editor.roleBtn = MakeButton(editor, 200, 22, 22, -408, "", function(self)
+	editor.roleBtn = MakeButton(editor, 200, 22, 22, y - 138, "", function(self)
 		local idx = 1
 		for i, r in ipairs(ROLE_CYCLE) do if r == editor.role then idx = i end end
 		editor.role = ROLE_CYCLE[idx % #ROLE_CYCLE + 1]
 		self:SetText(RoleButtonText(editor.role))
 		UpdatePreview()
 	end)
-	Label(editor, "Click to change. Auto uses your current spec.", 230, -414, "GameFontDisableSmall")
+	Label(editor, "Click to change. Auto uses your current spec.", 230, y - 144, "GameFontDisableSmall")
 
-	editor.autoIntro = MakeCheck(editor, "Post my note in group chat when I join a group", 18, -440)
-	editor.autoReply = MakeCheck(editor, "Auto-whisper my note back (once per player per 10 min)", 18, -466)
-	editor.skipKnown = MakeCheck(editor, "...but not to friends or guild members", 40, -492)
+	editor.autoIntro = MakeCheck(editor, "Post my note in group chat when I join a group", 18, y - 170)
+	editor.autoReply = MakeCheck(editor, "Auto-whisper my note back (once per player per 10 min)", 18, y - 196)
+	editor.skipKnown = MakeCheck(editor, "...but not to friends or guild members", 40, y - 222)
 
-	local save = MakeButton(editor, 110, 26, 0, 0, "Save", function()
+	local save = MakeButton(editor, 100, 26, 0, 0, "Save", function()
 		for i = 1, NUM_PHRASES do
 			DB.phrases[i].label = editor.labels[i]:GetText()
 			DB.phrases[i].text  = editor.texts[i]:GetText()
@@ -828,23 +910,30 @@ local function CreateEditor()
 		DB.autoIntro      = editor.autoIntro:GetChecked()
 		DB.autoReply      = editor.autoReply:GetChecked()
 		DB.replySkipKnown = editor.skipKnown:GetChecked()
-		UpdateButtons()
+		Layout()
 		editor:Hide()
 		Print("Saved.")
 	end)
 	save:ClearAllPoints()
 	save:SetPoint("BOTTOMRIGHT", -14, 12)
 
-	local cancel = MakeButton(editor, 110, 26, 0, 0, "Cancel", function() editor:Hide() end)
+	local cancel = MakeButton(editor, 100, 26, 0, 0, "Cancel", function() editor:Hide() end)
 	cancel:ClearAllPoints()
 	cancel:SetPoint("RIGHT", save, "LEFT", -8, 0)
 
-	local defaults = MakeButton(editor, 110, 26, 0, 0, "Defaults", function()
+	local defaults = MakeButton(editor, 100, 26, 0, 0, "Defaults", function()
 		FillEditor(DEFAULTS)
 		Print("Defaults loaded into the editor - press Save to keep them.")
 	end)
 	defaults:ClearAllPoints()
 	defaults:SetPoint("BOTTOMLEFT", 14, 12)
+
+	local again = MakeButton(editor, 130, 26, 0, 0, "Run setup again", function()
+		editor:Hide()
+		OpenSetup()
+	end)
+	again:ClearAllPoints()
+	again:SetPoint("LEFT", defaults, "RIGHT", 8, 0)
 
 	if ConsolePort and ConsolePort.AddInterfaceCursorFrame then
 		pcall(ConsolePort.AddInterfaceCursorFrame, ConsolePort, editor)
@@ -855,6 +944,300 @@ function OpenEditor()
 	if not editor then CreateEditor() end
 	FillEditor(DB)
 	editor:Show()
+end
+
+---------------------------------------------------------------------------
+-- First-run setup: pick your standard texts (max NUM_PHRASES), your note and
+-- whether the panel is on screen. Works with cursor, D-pad or keyboard.
+-- "A, A" accepts the defaults.
+---------------------------------------------------------------------------
+local SETUP_W, SETUP_H = 440, 344
+local SETUP_KEYS = NavKeys("DeckTalkSetup")
+local setupPending = false
+local RefreshSetup
+
+local function MakeOption(parent, w, x, y, text, onClick)
+	local row = CreateFrame("Button", nil, parent)
+	row:SetSize(w, 24)
+	row:SetPoint("TOPLEFT", x, y)
+	local box = row:CreateTexture(nil, "ARTWORK")
+	box:SetSize(22, 22)
+	box:SetPoint("LEFT", 0, 0)
+	box:SetTexture("Interface\\Buttons\\UI-CheckBox-Up")
+	row.check = row:CreateTexture(nil, "OVERLAY")
+	row.check:SetSize(22, 22)
+	row.check:SetPoint("LEFT", 0, 0)
+	row.check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+	row.check:Hide()
+	row.label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	row.label:SetPoint("LEFT", 26, 0)
+	row.label:SetWidth(w - 28)
+	row.label:SetJustifyH("LEFT")
+	row.label:SetWordWrap(false)
+	row.label:SetText(text)
+	local hl = row:CreateTexture(nil, "HIGHLIGHT")
+	hl:SetAllPoints()
+	hl:SetColorTexture(1, 1, 1, 0.08)
+	row:SetScript("OnClick", onClick)
+	return row
+end
+
+local function SetOption(row, on, dim)
+	row.on = on and true or false
+	row.check:SetShown(row.on)
+	if dim then row.label:SetTextColor(0.5, 0.5, 0.5) else row.label:SetTextColor(1, 1, 1) end
+end
+
+local function SetupCount()
+	local n = 0
+	for i = 1, #CATALOG do if setup.sel[i] then n = n + 1 end end
+	return n
+end
+
+RefreshSetup = function()
+	if not setup or not setup:IsShown() then return end
+	local p = setup.page
+	setup.title:SetText("DeckTalk setup  |cff999999(" .. p .. " of 2)|r")
+	setup.pages[1]:SetShown(p == 1)
+	setup.pages[2]:SetShown(p == 2)
+
+	local count = SetupCount()
+	for i, row in ipairs(setup.options) do
+		SetOption(row, setup.sel[i], not setup.sel[i] and count >= NUM_PHRASES)
+	end
+	setup.counter:SetText(count .. " of " .. NUM_PHRASES .. " chosen" ..
+		(count >= NUM_PHRASES and "  |cffff9933(untick one to swap)|r" or ""))
+
+	for k, row in ipairs(setup.noteOpts) do SetOption(row, setup.noteIdx == k) end
+	setup.notePreview:SetText("\"" .. (setup.noteIdx and NOTES[setup.noteIdx].text or DB.note) .. "\"")
+	SetOption(setup.checks.intro, setup.autoIntro)
+	SetOption(setup.checks.reply, setup.autoReply)
+	SetOption(setup.checks.panel, setup.showPanel)
+
+	local items = setup.pages[p].items
+	local f = items[setup.focus[p]]
+	setup.focusTex:ClearAllPoints()
+	setup.focusTex:SetPoint("TOPLEFT", f, "TOPLEFT", -3, 3)
+	setup.focusTex:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 3, -3)
+
+	local idx = p == 1 and f.catalogIndex
+	setup.sends:SetText(idx and ("|cff999999Sends:|r " .. CATALOG[idx].text:gsub("%%q", "[your tracked quest]")) or "")
+
+	if not setup.captured then
+		setup.hint:SetText("Use the cursor to choose")
+	elseif GamePadOn() then
+		setup.hint:SetText("D-pad: move   A: choose   B: back")
+	else
+		setup.hint:SetText("Arrows: move   Enter: choose   Esc: back")
+	end
+end
+
+local function SetupMove(dx, dy)
+	local page = setup.pages[setup.page]
+	local idx = setup.focus[setup.page] + dx + dy * page.cols
+	if idx >= 1 and idx <= #page.items then
+		setup.focus[setup.page] = idx
+		RefreshSetup()
+	end
+end
+
+local function SetupPage(p)
+	setup.page = p
+	RefreshSetup()
+end
+
+local function SetupFinish()
+	-- phrases: only touched if the selection changed
+	local changed = false
+	for i = 1, #CATALOG do
+		if (setup.sel[i] or false) ~= (setup.initial[i] or false) then changed = true end
+	end
+	if changed then
+		local list, inCatalog = {}, {}
+		for i, c in ipairs(CATALOG) do
+			inCatalog[c.text] = true
+			if setup.sel[i] and #list < NUM_PHRASES then tinsert(list, { label = c.label, text = c.text }) end
+		end
+		for i = 1, NUM_PHRASES do -- keep the user's own custom phrases while there is room
+			local p = DB.phrases[i]
+			if p and p.text ~= "" and not inCatalog[p.text] and #list < NUM_PHRASES then
+				tinsert(list, { label = p.label, text = p.text })
+			end
+		end
+		for i = #list + 1, NUM_PHRASES do list[i] = { label = "", text = "" } end
+		DB.phrases = list
+	end
+	if setup.noteIdx then DB.note = NOTES[setup.noteIdx].text end
+	DB.autoIntro = setup.autoIntro
+	DB.autoReply = setup.autoReply
+	DB.setupDone = true
+	setup:Hide()
+	if setup.showPanel then
+		DB.shown = true
+		panel:Show()
+	else
+		DB.shown = false
+		panel:Hide()
+	end
+	Layout()
+	Print("Setup done. Bind \"Quick chat menu\" under Options > Keybindings > AddOns > DeckTalk. Change texts any time with /dt config.")
+end
+
+local function CreateSetup()
+	setup = CreateFrame("Frame", "DeckTalkSetup", UIParent, "BasicFrameTemplateWithInset")
+	setup:SetSize(SETUP_W, SETUP_H)
+	setup:SetPoint("CENTER", UIParent, "CENTER", 0, 40)
+	setup:SetFrameStrata("DIALOG")
+	setup:SetClampedToScreen(true)
+	setup:EnableMouse(true)
+	setup:Hide()
+	tinsert(UISpecialFrames, "DeckTalkSetup") -- Esc closes when keys aren't captured
+	if setup.CloseButton then setup.CloseButton:SetScript("OnClick", function() setup:Hide() end) end
+
+	setup.title = setup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	setup.title:SetPoint("TOPLEFT", 10, -6)
+	setup.sel, setup.initial, setup.focus, setup.page = {}, {}, { 1, 1 }, 1
+	setup.pages, setup.options, setup.noteOpts, setup.checks = {}, {}, {}, {}
+
+	local function Page(cols)
+		local page = CreateFrame("Frame", nil, setup)
+		page:SetAllPoints()
+		page.items, page.cols = {}, cols
+		tinsert(setup.pages, page)
+		return page
+	end
+	local function BottomButton(page, text, fromRight, onClick)
+		local b = MakeButton(page, 110, 26, 0, 0, text, onClick)
+		b:ClearAllPoints()
+		b:SetPoint("BOTTOMRIGHT", setup, "BOTTOMRIGHT", -14 - fromRight * 118, 30)
+		return b
+	end
+
+	-- page 1: standard texts ------------------------------------------------
+	local p1 = Page(2)
+	Label(p1, "Welcome to DeckTalk!", 22, -34, "GameFontNormalLarge")
+	Label(p1, "Pick the messages you want one press away. You can reword them later.", 22, -56, "GameFontHighlightSmall")
+	for i, c in ipairs(CATALOG) do
+		local col, r = (i - 1) % 2, math.floor((i - 1) / 2)
+		local row = MakeOption(p1, 190, 24 + col * 204, -78 - r * 26, c.label, function()
+			if setup.sel[i] then
+				setup.sel[i] = false
+			elseif SetupCount() < NUM_PHRASES then
+				setup.sel[i] = true
+			end
+			RefreshSetup()
+		end)
+		row.catalogIndex = i
+		row:SetScript("OnEnter", function() setup.focus[1] = i RefreshSetup() end)
+		setup.options[i] = row
+		tinsert(p1.items, row)
+	end
+	setup.counter = Label(p1, "", 24, -240, "GameFontNormalSmall")
+	setup.sends = Label(p1, "", 24, -256, "GameFontHighlightSmall")
+	setup.sends:SetWidth(SETUP_W - 48)
+	setup.sends:SetWordWrap(false)
+	setup.skipBtn = BottomButton(p1, "Skip", 1, function() setup:Hide() end)
+	setup.nextBtn = BottomButton(p1, "Next", 0, function() SetupPage(2) end)
+	tinsert(p1.items, setup.skipBtn)
+	tinsert(p1.items, setup.nextBtn)
+
+	-- page 2: note + panel ---------------------------------------------------
+	local p2 = Page(1)
+	Label(p2, "Your \"slow typer\" note", 22, -34, "GameFontNormalLarge")
+	Label(p2, "Tells other players why you're quiet. What are you playing on?", 22, -56, "GameFontHighlightSmall")
+	for k, n in ipairs(NOTES) do
+		local row = MakeOption(p2, 380, 24, -78 - (k - 1) * 26, n.label, function()
+			setup.noteIdx = k
+			RefreshSetup()
+		end)
+		setup.noteOpts[k] = row
+		tinsert(p2.items, row)
+	end
+	setup.notePreview = Label(p2, "", 26, -160, "GameFontDisableSmall")
+	setup.notePreview:SetWidth(SETUP_W - 52)
+	local function Check(key, y, text, field)
+		local row = MakeOption(p2, 392, 24, y, text, function()
+			setup[field] = not setup[field]
+			RefreshSetup()
+		end)
+		setup.checks[key] = row
+		tinsert(p2.items, row)
+	end
+	Check("intro", -194, "Post the note in group chat when I join a group", "autoIntro")
+	Check("reply", -220, "Whisper the note back to people who whisper me", "autoReply")
+	Check("panel", -246, "Keep the small button panel on screen", "showPanel")
+	setup.backBtn = BottomButton(p2, "Back", 1, function() SetupPage(1) end)
+	setup.finishBtn = BottomButton(p2, "Finish", 0, SetupFinish)
+	tinsert(p2.items, setup.backBtn)
+	tinsert(p2.items, setup.finishBtn)
+
+	-- focus marker sits above the buttons it highlights
+	local overlay = CreateFrame("Frame", nil, setup)
+	overlay:SetAllPoints()
+	overlay:SetFrameLevel((setup:GetFrameLevel() or 0) + 20)
+	setup.focusTex = overlay:CreateTexture(nil, "OVERLAY")
+	setup.focusTex:SetColorTexture(0.27, 0.88, 0.82, 0.30)
+
+	setup.hint = setup:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	setup.hint:SetPoint("BOTTOMLEFT", 14, 12)
+
+	MakeNavButtons(setup, "DeckTalkSetup", {
+		Up = function() SetupMove(0, -1) end,
+		Down = function() SetupMove(0, 1) end,
+		Left = function() SetupMove(-1, 0) end,
+		Right = function() SetupMove(1, 0) end,
+		OK = function()
+			local page = setup.pages[setup.page]
+			page.items[setup.focus[setup.page]]:Click()
+		end,
+		Back = function()
+			if setup.page == 2 then SetupPage(1) else setup:Hide() end
+		end,
+	})
+
+	setup:SetScript("OnHide", function()
+		ReleaseKeys(setup)
+		if not DB.setupDone then
+			DB.setupDone = true
+			Print("Setup skipped - the standard texts are active. Run it any time with /dt setup.")
+		end
+	end)
+
+	if ConsolePort and ConsolePort.AddInterfaceCursorFrame then
+		pcall(ConsolePort.AddInterfaceCursorFrame, ConsolePort, setup)
+	end
+end
+
+function OpenSetup()
+	if not setup then CreateSetup() end
+	if menu and menu:IsShown() then menu:Hide() end
+	-- tick the standard texts that are in use right now
+	local used = {}
+	for i = 1, NUM_PHRASES do
+		local p = DB.phrases[i]
+		if p and p.text ~= "" then used[p.text] = true end
+	end
+	for i, c in ipairs(CATALOG) do
+		setup.sel[i] = used[c.text] or false
+		setup.initial[i] = setup.sel[i]
+	end
+	setup.noteIdx = nil
+	for k, n in ipairs(NOTES) do if n.text == DB.note then setup.noteIdx = k end end
+	setup.autoIntro, setup.autoReply = DB.autoIntro and true or false, DB.autoReply and true or false
+	setup.showPanel = DB.shown and true or false
+	setup.page = 1
+	setup.focus[1] = #setup.pages[1].items -- Next
+	setup.focus[2] = #setup.pages[2].items -- Finish
+	setup:Show()
+	CaptureKeys(setup, SETUP_KEYS)
+	RefreshSetup()
+end
+
+local function AutoSetup()
+	if DB.setupDone then return end
+	if InCombatLockdown() then setupPending = true return end -- wait until combat ends
+	setupPending = false
+	OpenSetup()
 end
 
 ---------------------------------------------------------------------------
@@ -903,8 +1286,9 @@ ev:RegisterEvent("ADDON_LOADED")
 ev:SetScript("OnEvent", function(self, event, ...)
 	if event == "ADDON_LOADED" then
 		if ... ~= ADDON then return end
-		DeckTalkDB = CopyDefaults(DEFAULTS, DeckTalkDB or {})
-		DB = DeckTalkDB
+		DeckTalkDB = DeckTalkDB or {}
+		NormalizePhrases(DeckTalkDB)
+		DB = CopyDefaults(DEFAULTS, DeckTalkDB)
 		CreatePanel()
 		self:UnregisterEvent("ADDON_LOADED")
 		for _, e in ipairs({ "PLAYER_LOGIN", "GROUP_JOINED", "GROUP_LEFT", "GROUP_ROSTER_UPDATE",
@@ -916,8 +1300,9 @@ ev:SetScript("OnEvent", function(self, event, ...)
 		if ConsolePort and ConsolePort.AddInterfaceCursorFrame then
 			pcall(ConsolePort.AddInterfaceCursorFrame, ConsolePort, panel)
 		end
-		UpdateButtons()
+		Layout()
 		UpdateTitle()
+		if not DB.setupDone then C_Timer.After(2, AutoSetup) end -- first run after install
 
 	elseif event == "GROUP_JOINED" then
 		pendingIntro = true
@@ -929,16 +1314,25 @@ ev:SetScript("OnEvent", function(self, event, ...)
 
 	elseif event == "PLAYER_REGEN_DISABLED" then
 		-- fires just before combat lockdown: hand the D-pad / Enter / Esc back to the game
-		ReleaseKeys()
+		ReleaseKeys(menu)
+		ReleaseKeys(setup)
 		RefreshMenu()
+		RefreshSetup()
 
 	elseif event == "PLAYER_REGEN_ENABLED" then
 		if pendingIntro then C_Timer.After(1, TryIntro) end
-		if pendingUnbind then ReleaseKeys() end
-		if menu and menu:IsShown() then CaptureKeys() RefreshMenu() end
+		if menu then
+			if menu.pendingRelease then ReleaseKeys(menu) end
+			if menu:IsShown() then CaptureKeys(menu, MENU_KEYS) RefreshMenu() end
+		end
+		if setup then
+			if setup.pendingRelease then ReleaseKeys(setup) end
+			if setup:IsShown() then CaptureKeys(setup, SETUP_KEYS) RefreshSetup() end
+		end
+		if setupPending then C_Timer.After(1, AutoSetup) end
 
 	elseif event == "UPDATE_BINDINGS" then
-		UpdateButtons()
+		Layout()
 		RefreshMenu()
 
 	elseif event == "CHAT_MSG_WHISPER" then
@@ -953,7 +1347,7 @@ end)
 BINDING_HEADER_DECKTALK = "DeckTalk"
 BINDING_NAME_DECKTALK_MENU = "Quick chat menu (press again: next)"
 BINDING_NAME_DECKTALK_MENU_SEND = "Quick chat: send selected"
-BINDING_NAME_DECKTALK_TOGGLE = "Show / minimize panel"
+BINDING_NAME_DECKTALK_TOGGLE = "Show / hide panel"
 BINDING_NAME_DECKTALK_LFG = "LFG for tracked quest"
 BINDING_NAME_DECKTALK_NOTE = "Send Steam Deck note"
 BINDING_NAME_DECKTALK_REPLY = "Whisper note to last whisperer"
@@ -970,13 +1364,13 @@ SlashCmdList.DECKTALK = function(msg)
 		DeckTalk_Toggle()
 	elseif cmd == "config" or cmd == "edit" then
 		OpenEditor()
+	elseif cmd == "setup" then
+		OpenSetup()
 	elseif cmd == "hide" then
 		DB.shown = false
 		panel:Hide()
 	elseif cmd == "show" then
-		DB.shown, DB.collapsed = true, false
-		panel:Show()
-		ApplyCollapsed()
+		ShowPanel()
 	elseif cmd == "scale" and tonumber(rest) then
 		DB.scale = math.max(0.5, math.min(2, tonumber(rest)))
 		panel:SetScale(DB.scale)
@@ -986,6 +1380,6 @@ SlashCmdList.DECKTALK = function(msg)
 		panel:ClearAllPoints()
 		panel:SetPoint("LEFT", UIParent, "LEFT", 16, 80)
 	else
-		Print("/dt - show/minimize | /dt config | /dt hide | /dt show | /dt scale 1.2 | /dt reset")
+		Print("/dt - show/hide panel | /dt config | /dt setup | /dt scale 0.9 | /dt reset")
 	end
 end
