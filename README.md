@@ -29,7 +29,8 @@ plus a small panel and keybinds for the things you say all the time.
   The role comes from your spec, or you can set it yourself. With no tracked quest it posts your zone instead.
 - **Your note**: "I'm playing on a Steam Deck and typing is slow…"
   - optionally posted in group chat when you join a group (not in NPC-only groups, never mid-combat)
-  - optionally whispered back to strangers who whisper you, once per player per 10 minutes
+  - optionally whispered back the first time someone whispers you, in game or over Battle.net
+    (once per person per session)
 - **Made for back buttons.** Every action can be keybound, and the panel shows each button's key.
 - **Double-tap safe.** A short cooldown stops accidental double sends and channel spam.
 - **Easy to get back.** If you closed the panel, the Quick chat menu has a "Show panel" entry,

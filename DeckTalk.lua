@@ -22,7 +22,6 @@ local DEFAULTS = {
 	role           = "AUTO",  -- AUTO | TANK | HEALER | DAMAGER
 	autoIntro      = true,    -- post note in group chat when joining a group
 	autoReply      = true,    -- whisper note back to people who whisper you
-	replySkipKnown = true,    -- ...but not to friends / guild
 	shown          = true,
 	collapsed      = false,
 	scale          = 1,
@@ -56,15 +55,15 @@ local DESTS      = { "AUTO", "SAY", "GROUP", "WHISPER" }
 local DEST_TEXT  = { AUTO = "Auto", SAY = "Say", GROUP = "Group", WHISPER = "Whisper" }
 local CHAT_TEXT  = { SAY = "Say", PARTY = "Party", RAID = "Raid", INSTANCE_CHAT = "Instance" }
 
-local REPLY_COOLDOWN   = 600 -- auto-reply once per player per 10 min
 local CHAT_COOLDOWN    = 1   -- debounce for say/party/whisper
 local CHANNEL_COOLDOWN = 3   -- debounce for LFG/General (spam protection)
 
 local DB
-local lastWhisperer
+local lastWhisperer                       -- display name of the last person who whispered
+local lastWhisperKind, lastWhisperTarget   -- "WHISPER" + name, or "BN_WHISPER" + Battle.net id
 local lastWhisperAt = 0
 local WHISPER_WINDOW = 120 -- Auto replies to a whisper this fresh (when not in a group)
-local replied = {}
+local replied = {} -- auto-reply goes out once per person per session
 local lastSendAt = { CHAT = 0, CHANNEL = 0 }
 local pendingIntro = false
 
@@ -181,12 +180,12 @@ local function ResolveDest()
 		return nil, nil, "You're not in a group."
 	end
 	if d == "WHISPER" then
-		if lastWhisperer then return "WHISPER", lastWhisperer end
+		if lastWhisperTarget then return lastWhisperKind, lastWhisperTarget end
 		return nil, nil, "Nobody has whispered you yet."
 	end
 	local g = GroupChatType()
 	if g then return g end
-	if lastWhisperer and GetTime() - lastWhisperAt < WHISPER_WINDOW then return "WHISPER", lastWhisperer end
+	if lastWhisperTarget and GetTime() - lastWhisperAt < WHISPER_WINDOW then return lastWhisperKind, lastWhisperTarget end
 	return "SAY"
 end
 
@@ -219,7 +218,13 @@ local function Send(msg, chatType, target, auto)
 	end
 	msg = Expand(msg)
 	if #msg > 255 and not msg:find("|H", 1, true) then msg = msg:sub(1, 255) end
-	local ok, err = pcall(SendChat, msg, chatType, nil, target)
+	local ok, err
+	if chatType == "BN_WHISPER" then
+		local bnSend = (C_BattleNet and C_BattleNet.SendWhisper) or BNSendWhisper
+		ok, err = pcall(bnSend, target, msg)
+	else
+		ok, err = pcall(SendChat, msg, chatType, nil, target)
+	end
 	if not ok then
 		if not auto then Print("Couldn't send: " .. tostring(err)) end
 		return false
@@ -314,8 +319,8 @@ local function DestLabel()
 	local chatType, target = ResolveDest()
 	if not chatType then
 		return "|cffff5555" .. (DB.dest == "WHISPER" and "no whisper yet" or "not in a group") .. "|r"
-	elseif chatType == "WHISPER" then
-		return "|cffff80ffWhisper " .. ShortName(target) .. "|r"
+	elseif chatType == "WHISPER" or chatType == "BN_WHISPER" then
+		return "|cffff80ffWhisper " .. ShortName(lastWhisperer) .. "|r"
 	end
 	return CHAT_TEXT[chatType] or chatType
 end
@@ -326,7 +331,8 @@ local function DestShort()
 	if not chatType then
 		return "|cffff5555" .. (DB.dest == "WHISPER" and "No whisper" or "No group") .. "|r"
 	end
-	local name = chatType == "WHISPER" and ("|cffff80ff" .. ShortName(target) .. "|r") or (CHAT_TEXT[chatType] or chatType)
+	local whisper = chatType == "WHISPER" or chatType == "BN_WHISPER"
+	local name = whisper and ("|cffff80ff" .. ShortName(lastWhisperer) .. "|r") or (CHAT_TEXT[chatType] or chatType)
 	if DB.dest == "AUTO" then return "Auto (" .. name .. ")" end
 	return "To: " .. name
 end
@@ -889,7 +895,7 @@ local function CreateEditor()
 	Label(editor, "Click to change. Auto uses your current spec.", 230, y - 132, "GameFontDisableSmall")
 
 	editor.autoIntro = MakeCheck(editor, "Post my note in group chat when I join a group", 18, y - 156)
-	editor.autoReply = MakeCheck(editor, "Whisper my note back to strangers who whisper me", 18, y - 182)
+	editor.autoReply = MakeCheck(editor, "Whisper my note back the first time someone whispers me", 18, y - 182)
 
 	local save = MakeButton(editor, 100, 26, 0, 0, "Save", function()
 		for i = 1, NUM_PHRASES do
@@ -1377,17 +1383,12 @@ local function TryIntro()
 	if chatType then Send(DB.note, chatType, nil, true) end
 end
 
-local function IsKnown(guid)
-	if not guid then return false end
-	if C_FriendList and C_FriendList.IsFriend and C_FriendList.IsFriend(guid) then return true end
-	if C_BattleNet and C_BattleNet.GetAccountInfoByGUID and C_BattleNet.GetAccountInfoByGUID(guid) then return true end
-	if IsGuildMember and IsGuildMember(guid) then return true end
-	return false
-end
-
-local function OnWhisper(text, sender, _, _, _, flags, _, _, _, _, _, guid)
-	if not sender or sender == "" then return end
-	lastWhisperer = sender
+-- kind = "WHISPER" (in-game) or "BN_WHISPER" (Battle.net)
+local function OnWhisper(kind, text, sender, _, _, _, flags, _, _, _, _, _, _, bnID)
+	local target = sender
+	if kind == "BN_WHISPER" then target = bnID end
+	if not target or target == "" or not sender then return end
+	lastWhisperer, lastWhisperKind, lastWhisperTarget = sender, kind, target
 	lastWhisperAt = GetTime()
 	UpdateTitle()
 	C_Timer.After(WHISPER_WINDOW + 0.5, UpdateTitle)
@@ -1395,11 +1396,10 @@ local function OnWhisper(text, sender, _, _, _, flags, _, _, _, _, _, guid)
 	if flags == "GM" then return end
 	if InCombatLockdown() and IsInInstance() then return end -- chat is restricted there
 	if text == DB.note then return end -- another DeckTalk user: no ping-pong
-	if DB.replySkipKnown and IsKnown(guid) then return end
-	local now = GetTime()
-	if replied[sender] and now - replied[sender] < REPLY_COOLDOWN then return end
-	replied[sender] = now
-	Send(DB.note, "WHISPER", sender, true)
+	local key = kind .. ":" .. tostring(target)
+	if replied[key] then return end -- only the first message from each person this session
+	replied[key] = true
+	Send(DB.note, kind, target, true)
 end
 
 ---------------------------------------------------------------------------
@@ -1417,7 +1417,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
 		CreatePanel()
 		self:UnregisterEvent("ADDON_LOADED")
 		for _, e in ipairs({ "PLAYER_LOGIN", "GROUP_JOINED", "GROUP_LEFT", "GROUP_ROSTER_UPDATE",
-			"CHAT_MSG_WHISPER", "UPDATE_BINDINGS", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED" }) do
+			"CHAT_MSG_WHISPER", "CHAT_MSG_BN_WHISPER", "UPDATE_BINDINGS", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED" }) do
 			self:RegisterEvent(e)
 		end
 
@@ -1463,7 +1463,10 @@ ev:SetScript("OnEvent", function(self, event, ...)
 
 	elseif event == "CHAT_MSG_WHISPER" then
 		-- pcall: chat payloads can be "secret" values in restricted situations
-		pcall(OnWhisper, ...)
+		pcall(OnWhisper, "WHISPER", ...)
+
+	elseif event == "CHAT_MSG_BN_WHISPER" then
+		pcall(OnWhisper, "BN_WHISPER", ...)
 	end
 end)
 

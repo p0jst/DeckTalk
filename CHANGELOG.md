@@ -15,7 +15,8 @@
 ### Changed
 - **Smaller panel** for handheld screens. It can be minimized or closed, and the Quick chat menu can bring it back.
 - **6 quick phrases instead of 8.** Saved phrases are kept (the first 6 with text).
-- The automatic note skips NPC-only groups, waits until combat ends, and is not whispered to friends, guild members or GMs.
+- The automatic note skips NPC-only groups and waits until combat ends.
+- **The auto-reply also answers Battle.net whispers**, and goes out only once per person per session.
 - "Deck note" is now "My note".
 
 ### Fixed

@@ -51,7 +51,7 @@ DeckTalk puts the things you say all the time one button press away. Open the **
   The role comes from your current spec, or you can set Tank / Healer / DPS yourself. With no quest tracked, it posts your zone instead.
 - **Your Steam Deck note**: *"I'm playing on a Steam Deck and typing is slow - sorry if I don't reply much!"*
   - Optionally posted in group chat when you join a group. It skips NPC-only groups and waits until combat ends.
-  - Optionally whispered back to people who whisper you. It only answers strangers (not friends, guild members or GMs), at most once per player every 10 minutes.
+  - Optionally whispered back to people who whisper you. It answers in-game and Battle.net whispers, only the first time each person writes in a session.
 - **Built for back buttons.** Everything can be keybound, and every button shows its key, so the panel doubles as a cheat sheet.
 - **Double-tap safe.** A short cooldown prevents accidental double posts and channel spam. Buttons flash **Sent!** when a message goes out.
 - **Easy to get back.** If you closed the panel, the Quick chat menu has a "Show panel" entry, so you never have to type a command. Where the addon compartment is available (the minimap addon menu), left-click shows the panel and right-click opens settings.
