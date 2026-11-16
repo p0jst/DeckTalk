@@ -1,4 +1,4 @@
-## Interface: 16001, 120100, 120105
+## Interface: 16001, 120100, 120105, 120107
 ## Title: DeckTalk
 ## Notes: One-tap chat for Steam Deck / controller players: quick phrases, LFG for your tracked quest, and an automatic "I'm on a Steam Deck" note.
 ## Author: Frederik
